@@ -1,0 +1,763 @@
+# DreamDict — Standalone Dictionary Service: Implementation Blueprint
+
+## Overview
+
+`dreamdict` is a self-contained HTTP dictionary service providing word validation, random
+word generation, definitions, synonyms, and cross-language translation for English (`en`),
+French (`fr`), and European Portuguese (`pt-PT`).
+
+It runs as a plain Go binary managed by systemd on the same host as GogoBee and Ollama.
+GogoBee calls it over localhost HTTP. No Docker, no Traefik, no external network exposure.
+
+If GogoBee later containerizes, only the service URL in GogoBee's config changes. The
+service itself is unmodified.
+
+---
+
+## Motivation
+
+GogoBee is approaching 50,000 lines of code across 47+ modules. A dictionary package with
+loaders, a SQLite dependency, and an import CLI would compound that bloat. Dictionary logic
+has no business living inside a Matrix bot. `dreamdict` is a clean extraction: self-contained
+infrastructure with a stable HTTP API, independently deployable, independently updatable,
+with no knowledge of Matrix, rooms, or bot commands.
+
+---
+
+## Repository
+
+Separate repository: `dreamdict` (not a GogoBee internal package).
+
+```
+dreamdict/
+├── cmd/
+│   ├── server/
+│   │   └── main.go          # HTTP server binary
+│   └── dictimport/
+│       └── main.go          # One-time data import CLI
+├── internal/
+│   ├── dictionary/
+│   │   ├── dict.go          # Core package: public API
+│   │   ├── db.go            # SQLite connection + schema bootstrap
+│   │   └── query.go         # IsValidWord, RandomWord, Define, Synonyms, Translate
+│   └── loader/
+│       ├── loader.go        # Shared interface + orchestrator
+│       ├── scowl.go         # English word list
+│       ├── hunspell.go      # French + pt-PT word lists (shared, parameterized)
+│       ├── wordnet.go       # English definitions + synonyms
+│       ├── lexique.go       # French POS + frequency enrichment
+│       ├── wolf.go          # French definitions + synonyms
+│       ├── dicionario.go    # pt-PT definitions
+│       └── wiktionary.go    # All langs: supplemental definitions + translations
+├── data/
+│   └── .gitkeep             # Source data files (not committed)
+├── dict.db                  # Generated SQLite database (not committed)
+├── scripts/
+│   └── download-dict-data.sh
+├── deploy/
+│   └── dreamdict.service     # systemd unit file
+├── go.mod
+└── README.md
+```
+
+---
+
+## HTTP API
+
+The server listens on `127.0.0.1:7777` by default (configurable via `--port` flag or
+`DREAMDICT_PORT` env var). All responses are JSON. All endpoints are read-only GET requests.
+
+### `GET /valid`
+
+Check if a word exists in a language's word list.
+
+**Query params:** `word` (required), `lang` (required: `en`, `fr`, `pt-PT`)
+
+**Response:**
+```json
+{"valid": true}
+```
+
+---
+
+### `GET /random`
+
+Return a random word for a language, with optional filters.
+
+**Query params:**
+- `lang` (required)
+- `pos` (optional: `noun`, `verb`, `adjective`, `adverb`)
+- `min` (optional: minimum word length, integer)
+- `max` (optional: maximum word length, integer)
+- `min_freq` (optional: minimum frequency score, integer; only meaningful for `fr`)
+
+**Response:**
+```json
+{"word": "ephemeral"}
+```
+
+**Error (no words match filters):**
+```json
+{"error": "no_match", "message": "no words match the given filters"}
+```
+
+---
+
+### `GET /define`
+
+Return all definitions for a word, ordered by source priority.
+
+**Query params:** `word` (required), `lang` (required)
+
+**Response:**
+```json
+{
+  "word": "ephemeral",
+  "lang": "en",
+  "definitions": [
+    {"pos": "adjective", "gloss": "lasting for a very short time", "source": "wordnet", "priority": 10},
+    {"pos": "adjective", "gloss": "lasting only for a day", "source": "wiktionary", "priority": 20}
+  ]
+}
+```
+
+**Word exists but has no definitions:**
+```json
+{"word": "...", "lang": "...", "definitions": []}
+```
+
+---
+
+### `GET /synonyms`
+
+Return deduplicated synonyms for a word.
+
+**Query params:** `word` (required), `lang` (required)
+
+**Response:**
+```json
+{"word": "happy", "lang": "en", "synonyms": ["glad", "joyful", "content", "pleased"]}
+```
+
+---
+
+### `GET /translate`
+
+Return known equivalents of a word in another language.
+
+**Query params:** `word` (required), `from` (required), `to` (required)
+
+**Response:**
+```json
+{"word": "cat", "from": "en", "to": "fr", "translations": ["chat", "minet"]}
+```
+
+---
+
+### `GET /health`
+
+Health check and database stats.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "db_path": "/opt/dreamdict/dict.db",
+  "word_counts": {"en": 214832, "fr": 82104, "pt-PT": 71088},
+  "def_counts":  {"en": 380000, "fr": 200000, "pt-PT": 120000},
+  "imported_at": "2025-03-28T14:22:00Z",
+  "schema_version": "1"
+}
+```
+
+---
+
+## Core Package (`internal/dictionary`)
+
+### `dict.go`
+
+```go
+package dictionary
+
+type Options struct {
+    MinLength    int
+    MaxLength    int
+    POS          string  // "", "noun", "verb", "adjective", "adverb"
+    MinFrequency int     // 0 = no filter
+}
+
+type Definition struct {
+    POS      string
+    Gloss    string
+    Source   string
+    Priority int
+}
+
+type Dictionary struct { /* unexported */ }
+
+func New(dbPath string) (*Dictionary, error)
+func (d *Dictionary) Close() error
+func (d *Dictionary) IsValidWord(word, lang string) (bool, error)
+func (d *Dictionary) RandomWord(lang string, opts Options) (string, error)
+func (d *Dictionary) Define(word, lang string) ([]Definition, error)
+func (d *Dictionary) Synonyms(word, lang string) ([]string, error)
+func (d *Dictionary) Translate(word, fromLang, toLang string) ([]string, error)
+func (d *Dictionary) WordCount() (map[string]int, error)
+func (d *Dictionary) SupportedLangs() ([]string, error)
+
+func ValidLang(lang string) bool  // "en", "fr", "pt-PT"
+
+var (
+    ErrNoMatch   = errors.New("dictionary: no word matches filters")
+    ErrNotSeeded = errors.New("dictionary: database not seeded, run: go run ./cmd/dictimport")
+)
+```
+
+---
+
+## Database Schema
+
+Use `modernc.org/sqlite` (pure Go, no CGO).
+
+```sql
+CREATE TABLE IF NOT EXISTS words (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    word      TEXT    NOT NULL,
+    lang      TEXT    NOT NULL,
+    pos       TEXT,
+    frequency INTEGER DEFAULT 0,
+    UNIQUE(word, lang)
+);
+
+CREATE INDEX IF NOT EXISTS idx_words_lang     ON words(lang);
+CREATE INDEX IF NOT EXISTS idx_words_lang_pos ON words(lang, pos);
+CREATE INDEX IF NOT EXISTS idx_words_word     ON words(word);
+
+CREATE TABLE IF NOT EXISTS definitions (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id  INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    pos      TEXT,
+    gloss    TEXT    NOT NULL,
+    source   TEXT    NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 99,
+    UNIQUE(word_id, gloss)
+);
+
+CREATE INDEX IF NOT EXISTS idx_definitions_word_id          ON definitions(word_id);
+CREATE INDEX IF NOT EXISTS idx_definitions_word_id_priority ON definitions(word_id, priority);
+
+CREATE TABLE IF NOT EXISTS synonyms (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id  INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    synonym  TEXT    NOT NULL,
+    source   TEXT    NOT NULL,
+    UNIQUE(word_id, synonym)
+);
+
+CREATE INDEX IF NOT EXISTS idx_synonyms_word_id ON synonyms(word_id);
+
+CREATE TABLE IF NOT EXISTS translations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id     INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    translation TEXT    NOT NULL,
+    target_lang TEXT    NOT NULL,
+    source      TEXT    NOT NULL,
+    UNIQUE(word_id, translation, target_lang)
+);
+
+CREATE INDEX IF NOT EXISTS idx_translations_word_id ON translations(word_id);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+```
+
+### Definition Priority
+
+| Source | Priority |
+|---|---|
+| `wordnet` | 10 |
+| `wolf` | 10 |
+| `dicionario-aberto` | 10 |
+| `wiktionary` | 20 |
+
+---
+
+## Server Binary (`cmd/server/main.go`)
+
+### Flags / Env Vars
+
+```
+--port      PORT     Listen port (default 7777)       DREAMDICT_PORT
+--db        PATH     Path to dict.db                  DREAMDICT_DB
+--host      HOST     Listen host (default 127.0.0.1)  DREAMDICT_HOST
+```
+
+Default host is `127.0.0.1` — the service binds localhost only. It is never exposed to the
+external network. If GogoBee containerizes in future, change host to `0.0.0.0` and control
+access at the Docker network level.
+
+### Startup Behaviour
+
+- Open the SQLite database on startup; log and exit if unavailable or not seeded
+- Register HTTP handlers for all six endpoints
+- Log `dreamdict listening on 127.0.0.1:7777` on successful start
+- Handle `SIGTERM` / `SIGINT` for graceful shutdown (close DB, drain in-flight requests)
+
+### HTTP Handler Pattern
+
+All handlers follow the same structure:
+1. Parse and validate query params — return `400` with `{"error": "...", "message": "..."}` on bad input
+2. Call the appropriate `dictionary.*` method
+3. Return `200` with JSON response, or `404` if the word is not found, or `500` on
+   unexpected errors
+4. Log errors at ERROR level; log each request at DEBUG level (controllable via `--log-level`)
+
+Use only standard library `net/http` — no framework needed for six endpoints.
+
+---
+
+## Import CLI (`cmd/dictimport/main.go`)
+
+### Flags
+
+```
+--db        Path to output dict.db     (default: ./dict.db)
+--data      Path to data directory     (default: ./data/)
+--langs     Comma-separated langs      (default: en,fr,pt-PT)
+--clean     Drop and recreate all tables before import
+--skip      Comma-separated loader names to skip
+```
+
+### Execution Order
+
+**English:**
+1. `scowl` — populates words
+2. `wordnet` — definitions + synonyms
+3. `wiktionary-en` — supplemental definitions, synonyms, translations
+
+**French:**
+1. `hunspell-fr` — populates words
+2. `lexique` — enriches POS + frequency
+3. `wolf` — definitions + synonyms
+4. `wiktionary-fr` — supplemental definitions, synonyms, translations
+
+**pt-PT:**
+1. `hunspell-pt` — populates words
+2. `dicionario` — definitions
+3. `wiktionary-pt` — supplemental definitions, synonyms, translations
+
+Use `INSERT OR IGNORE` throughout. Wrap each loader in a single transaction; commit on
+completion. Print per-loader row counts and elapsed time. Print final summary.
+
+---
+
+## Data Sources & Loader Specs
+
+---
+
+### English — SCOWL (`loader/scowl.go`)
+
+**Source:** https://wordlist.aspell.net/
+**Files:** All `final/english-words.NN` where NN ≤ 70
+
+One word per line. Skip blank lines and `#` comments. Lowercase. Skip words with
+spaces, digits, hyphens, or apostrophes. `INSERT OR IGNORE INTO words (word, lang) VALUES (?, 'en')`.
+
+**Expected:** ~170,000–220,000 words.
+
+---
+
+### French + pt-PT — Hunspell (`loader/hunspell.go`)
+
+**Source:** https://github.com/LibreOffice/dictionaries
+**Files:** `fr_FR/fr_FR.dic`, `pt_PT/pt_PT.dic`
+
+Skip line 1 (word count). Split each line on `/`, take left side as base word. Lowercase.
+Skip words with digits, spaces, or non-Latin characters.
+
+Same function handles both languages: `func Load(path string, lang string, db *sql.DB) error`
+
+**Expected:** ~60,000–90,000 words per language.
+
+---
+
+### English Definitions + Synonyms — WordNet (`loader/wordnet.go`)
+
+**Source:** https://wordnet.princeton.edu/download/current-version
+**Files:** `dict/data.noun`, `dict/data.verb`, `dict/data.adj`, `dict/data.adv`
+
+Skip lines starting with two spaces (headers). Parse `ss_type` for POS. Extract all words
+in synset. Take gloss text before the first `;` (drops usage examples). Insert definitions
+at `priority=10`. Insert intra-synset word pairs as synonyms. Skip words containing `_`
+for synonym insertion.
+
+---
+
+### French Enrichment — Lexique (`loader/lexique.go`)
+
+**Source:** http://www.lexique.org/?page_id=319
+**File:** `Lexique383.tsv`
+
+Columns: 0=`ortho`, 3=`cgram`, 8=`freqfilms2`. POS map: `NOM→noun`, `VER→verb`,
+`ADJ→adjective`, `ADV→adverb`. Frequency = `freqfilms2 × 1000` truncated to int.
+On conflict with existing Hunspell row: `UPDATE ... SET pos=?, frequency=? WHERE pos IS NULL`.
+
+---
+
+### French Definitions + Synonyms — WOLF (`loader/wolf.go`)
+
+**Source:** https://github.com/nicolashernandez/WOLF
+**File:** `wolf-1.0b4.xml.bz2` → decompress to `wolf.xml`
+
+Stream-parse XML with `encoding/xml`. For each `<SYNSET>`: collect `<LITERAL>` values,
+map `<POS>`, insert definitions at `priority=10`, insert intra-synset synonym pairs.
+
+---
+
+### pt-PT Definitions — Dicionário Aberto (`loader/dicionario.go`)
+
+**Source:** https://github.com/jorgecardoso/dicionario-aberto
+**File:** `dicionario-aberto.xml`
+
+**⚠️ Inspect the file before writing the parser:**
+```bash
+head -100 data/dicionario-aberto.xml
+```
+Print distinct `<pos>` values before writing the POS map. Element names in the live file
+may differ from older documentation. Stream-parse XML. Insert definitions at `priority=10`.
+
+---
+
+### All Languages — Wiktionary (`loader/wiktionary.go`)
+
+**Source:** kaikki.org pre-parsed Wiktionary JSONL dumps
+
+| Target file | Lang | URL |
+|---|---|---|
+| `kaikki-en.jsonl` | `en` | https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.json |
+| `kaikki-fr.jsonl` | `fr` | https://kaikki.org/dictionary/French/kaikki.org-dictionary-French.json |
+| `kaikki-pt.jsonl` | `pt-PT` | https://kaikki.org/dictionary/Portuguese/kaikki.org-dictionary-Portuguese.json |
+
+**JSON structure per line:**
+```json
+{
+  "word": "example",
+  "pos": "noun",
+  "lang_code": "en",
+  "senses": [
+    {"glosses": ["a representative instance"], "tags": []},
+    {"glosses": ["past tense of exemplify"], "tags": ["form-of"]}
+  ],
+  "synonyms": [{"word": "instance"}],
+  "translations": [
+    {"code": "fr", "word": "exemple"},
+    {"code": "pt", "word": "exemplo"}
+  ]
+}
+```
+
+**POS mapping:** `noun→noun`, `verb→verb`, `adj→adjective`, `adv→adverb`, `name→noun`.
+
+**Import logic:**
+- Use `bufio.Scanner` with 10MB buffer (default 64KB truncates long lines silently)
+- Wrap in single transaction; commit every 10,000 rows
+- Verify `lang_code` matches expected language; skip if not
+- Lowercase word; skip if contains spaces or digits
+- Skip senses tagged `form-of` or `alt-of`
+- Skip glosses that are empty, start with `(`, or exceed 500 characters
+- Insert definitions at `priority=20`; `UNIQUE(word_id, gloss)` handles deduplication silently
+- Insert synonyms; `UNIQUE(word_id, synonym)` handles deduplication silently
+- **Translations:** for each entry in `translations[]`, if `code` maps to a supported lang
+  and `code != source lang`, insert into `translations` table
+  - Code mapping: `fr→fr`, `pt→pt-PT`, `en→en`
+  - Skip translations where `word` contains spaces or digits
+
+**pt-PT Brazil filtering:** Reject senses where `tags` contains `"Brazil"` or
+`"Brazilian Portuguese"`. Accept untagged senses and senses tagged `"Portugal"` or
+`"European Portuguese"`.
+
+**Expected additional definitions after deduplication:**
+- en: ~200,000–400,000
+- fr: ~80,000–150,000
+- pt-PT: ~40,000–80,000
+
+---
+
+## Deployment (systemd)
+
+### File Locations
+
+```
+/usr/local/bin/dreamdict          # compiled binary
+/opt/dreamdict/dict.db            # SQLite database
+/opt/dreamdict/data/              # source data files (can be deleted after import)
+/etc/dreamdict/dreamdict.env       # environment config
+/var/log/dreamdict/               # logs (or use journald)
+```
+
+### `deploy/dreamdict.service`
+
+```ini
+[Unit]
+Description=DreamDict dictionary service
+After=network.target
+# If GogoBee ever runs as a service too:
+# Before=dreamdict.service
+
+[Service]
+Type=simple
+User=dreamdict
+Group=dreamdict
+EnvironmentFile=/etc/dreamdict/dreamdict.env
+ExecStart=/usr/local/bin/dreamdict server \
+    --host 127.0.0.1 \
+    --port 7777 \
+    --db /opt/dreamdict/dict.db
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/dreamdict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### `/etc/dreamdict/dreamdict.env`
+
+```
+DREAMDICT_PORT=7777
+DREAMDICT_DB=/opt/dreamdict/dict.db
+```
+
+### Install Steps
+
+```bash
+# Create user
+useradd --system --no-create-home --shell /usr/sbin/nologin dreamdict
+
+# Create dirs
+mkdir -p /opt/dreamdict /etc/dreamdict /var/log/dreamdict
+chown dreamdict:dreamdict /opt/dreamdict /var/log/dreamdict
+
+# Build and install binary
+go build -o /usr/local/bin/dreamdict ./cmd/server
+chmod 755 /usr/local/bin/dreamdict
+
+# Run import (as yourself, not dreamdict user)
+go run ./cmd/dictimport --db /opt/dreamdict/dict.db --data /opt/dreamdict/data/
+chown dreamdict:dreamdict /opt/dreamdict/dict.db
+
+# Install and start service
+cp deploy/dreamdict.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now dreamdict
+
+# Verify
+systemctl status dreamdict
+curl http://127.0.0.1:7777/health
+```
+
+### Updating the Database
+
+```bash
+# Stop service, rebuild database, restart
+systemctl stop dreamdict
+go run ./cmd/dictimport --db /opt/dreamdict/dict.db --clean
+chown dreamdict:dreamdict /opt/dreamdict/dict.db
+systemctl start dreamdict
+```
+
+---
+
+## GogoBee Integration
+
+GogoBee gets a single `DreamDictClient` struct. Zero dictionary logic inside the bot.
+
+### Client Package
+
+Add to GogoBee: `internal/dreamclient/client.go`
+
+```go
+package dreamclient
+
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "net/url"
+    "time"
+)
+
+type Client struct {
+    baseURL    string
+    httpClient *http.Client
+}
+
+func New(baseURL string) *Client {
+    return &Client{
+        baseURL: baseURL,
+        httpClient: &http.Client{Timeout: 3 * time.Second},
+    }
+}
+
+func (c *Client) IsValidWord(word, lang string) (bool, error)
+func (c *Client) RandomWord(lang string, pos string, min, max int) (string, error)
+func (c *Client) Define(word, lang string) ([]Definition, error)
+func (c *Client) Synonyms(word, lang string) ([]string, error)
+func (c *Client) Translate(word, fromLang, toLang string) ([]string, error)
+func (c *Client) Health() (*HealthResponse, error)
+```
+
+### Configuration
+
+In GogoBee's config:
+```yaml
+dictionary:
+  url: "http://127.0.0.1:7777"
+```
+
+When GogoBee eventually containerizes, this becomes the container network address.
+No other changes required.
+
+### Replacing Wordnik Calls
+
+Run `grep -r -i wordnik .` in the GogoBee repo to find all call sites. Replace:
+
+| Wordnik call | GogoBee replacement |
+|---|---|
+| `GET /word/{word}/valid` | `dictClient.IsValidWord(word, lang)` |
+| `GET /words/randomWord` | `dictClient.RandomWord(lang, pos, min, max)` |
+| `GET /word/{word}/definitions` | `dictClient.Define(word, lang)` |
+| `GET /word/{word}/relatedWords` | `dictClient.Synonyms(word, lang)` |
+
+Calls previously hardcoded to English: keep `lang = "en"`.
+
+### Startup Behaviour
+
+On GogoBee startup, call `/health` to verify dreamdict is reachable. Log a warning (not
+a fatal error) if unavailable — dictionary-dependent commands should fail gracefully with
+a user-facing message rather than taking the whole bot down.
+
+---
+
+## Data File Checklist
+
+| File | Lang | Source |
+|---|---|---|
+| `scowl/final/english-words.*` | en | wordlist.aspell.net |
+| `wordnet/dict/data.{noun,verb,adj,adv}` | en | wordnet.princeton.edu |
+| `kaikki-en.jsonl` | en | kaikki.org |
+| `fr_FR.dic` | fr | github.com/LibreOffice/dictionaries |
+| `Lexique383.tsv` | fr | lexique.org |
+| `wolf.xml` | fr | github.com/nicolashernandez/WOLF |
+| `kaikki-fr.jsonl` | fr | kaikki.org |
+| `pt_PT.dic` | pt-PT | github.com/LibreOffice/dictionaries |
+| `dicionario-aberto.xml` | pt-PT | github.com/jorgecardoso/dicionario-aberto |
+| `kaikki-pt.jsonl` | pt-PT | kaikki.org |
+
+`scripts/download-dict-data.sh` automates all downloads. Idempotent — skips existing files
+unless `--force` passed. Handles tar extraction (SCOWL), bz2 decompression (WOLF), and
+git clones where no stable direct URL exists.
+
+---
+
+## `go.mod` Dependencies
+
+```
+modernc.org/sqlite    # Pure-Go SQLite, no CGO
+```
+
+Standard library covers everything else: `net/http`, `encoding/xml`, `encoding/json`,
+`bufio`, `compress/bzip2`, `database/sql`, `flag`, `log/slog`.
+
+---
+
+## Testing
+
+### Service Tests (`internal/dictionary/dict_test.go`)
+
+Use `:memory:` SQLite. Cover:
+
+1. `IsValidWord` — known word true, unknown false, case-insensitive
+2. `RandomWord` — matches length + POS filters; returns `ErrNoMatch` on empty set
+3. `Define` — priority ordering (wordnet before wiktionary); empty slice for no definitions
+4. `Synonyms` — deduplicated; empty slice when none
+5. `Translate` — returns correct target-lang translations; empty slice when none
+6. `ErrNotSeeded` — when `meta` table has no rows
+7. Gloss deduplication — identical gloss twice → one row
+8. Synonym deduplication — identical synonym twice → one row
+9. Translation deduplication — identical translation twice → one row
+10. `form-of` filtering — senses tagged `form-of` not inserted
+11. pt-PT Brazil filtering — `Brazil`-tagged senses rejected; untagged accepted
+
+### HTTP Handler Tests (`cmd/server/`)
+
+Use `httptest.NewServer`. Cover:
+
+1. `/valid` — 200 true/false, 400 on missing params
+2. `/random` — 200 with word, 404 on no match
+3. `/define` — 200 with ordered definitions, 200 with empty array on no defs
+4. `/synonyms` — 200 with list, 200 with empty array
+5. `/translate` — 200 with list, 200 with empty array
+6. `/health` — 200 with counts
+
+---
+
+## Expected Database Size
+
+| Language | Words | Definitions | Approx size |
+|---|---|---|---|
+| en | ~220,000 | ~380,000 | ~180MB |
+| fr | ~90,000 | ~200,000 | ~80MB |
+| pt-PT | ~75,000 | ~120,000 | ~50MB |
+| **Total** | | | **~310MB** |
+
+Add to `.gitignore`: `dict.db`, `data/`
+
+---
+
+## Phase 2: Affix Expansion
+
+**Implement shortly after initial launch, not at initial launch.**
+
+The base-forms-only approach in the initial import means `IsValidWord("running", "en")`
+returns false because only `"run"` is stored. For Hangman this doesn't matter — DreamDict
+generates the puzzle word and it's always a base form. But for any command where a player
+submits a word for validation (UNO, word games, future puzzle modes), this is a real
+correctness bug, not a theoretical one.
+
+**Recommended approach:** affix expansion at import time using `go-hunspell`
+(`github.com/trustmaster/go-hunspell`). Parse the `.aff` rules for each language and
+generate all valid inflected forms during `dictimport`, storing them in the `words` table
+alongside base forms. This keeps `IsValidWord` as a simple indexed lookup with no runtime
+stemming logic.
+
+**Do not implement stemming as an alternative.** Stemming at query time is more complex,
+language-specific, and redundant if you expand affixes at import time. Pick one direction —
+affix expansion at import is the cleaner path for this architecture.
+
+**Sequencing:** get the service running and validate data quality across all three languages
+first. Affix expansion is a `dictimport` change only — the HTTP API, schema, and GogoBee
+client are untouched.
+
+---
+
+## Deferred: Traefik Route for Second Consumer
+
+When a second consumer for DreamDict exists, adding a Traefik route on parodia.dev's
+internal network is trivial — one label, one DNS entry, twenty minutes of work. Do it
+then, not now. The service architecture requires no changes at that point.
+
+---
+
+## Not Worth Doing: HTTP Caching Headers
+
+The consumers are on localhost, there is no intermediary cache, and SQLite responses are
+already faster than any cache lookup. Drop this entirely.

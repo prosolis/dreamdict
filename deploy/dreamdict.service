@@ -1,0 +1,25 @@
+[Unit]
+Description=DreamDict dictionary service
+After=network.target
+
+[Service]
+Type=simple
+User=dreamdict
+Group=dreamdict
+EnvironmentFile=/etc/dreamdict/dreamdict.env
+ExecStart=/usr/local/bin/dreamdict server \
+    --host 127.0.0.1 \
+    --port 7777 \
+    --db /opt/dreamdict/dict.db
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/dreamdict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
