@@ -184,9 +184,11 @@ if [[ -f "$DATA_DIR/kaikki-en.jsonl" && "$FORCE" != "true" ]]; then
     fi
 fi
 if [[ ! -f "$DATA_DIR/kaikki-en.jsonl" ]]; then
-    download "https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl.gz" "$DATA_DIR/kaikki-en.jsonl.gz"
+    KAIKKI_EN_GZ="$DATA_DIR/kaikki-en.jsonl.gz"
+    download "https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl.gz" "$KAIKKI_EN_GZ"
     echo "  [decompress] kaikki-en.jsonl.gz"
-    gunzip -f "$DATA_DIR/kaikki-en.jsonl.gz"
+    gunzip -kf "$KAIKKI_EN_GZ"
+    save_checksum "kaikki-en" "$KAIKKI_EN_GZ"
 fi
 
 # ============================================================
@@ -264,9 +266,11 @@ if [[ -f "$DATA_DIR/kaikki-fr.jsonl" && "$FORCE" != "true" ]]; then
     fi
 fi
 if [[ ! -f "$DATA_DIR/kaikki-fr.jsonl" ]]; then
-    download "https://kaikki.org/dictionary/French/kaikki.org-dictionary-French.jsonl.gz" "$DATA_DIR/kaikki-fr.jsonl.gz"
+    KAIKKI_FR_GZ="$DATA_DIR/kaikki-fr.jsonl.gz"
+    download "https://kaikki.org/dictionary/French/kaikki.org-dictionary-French.jsonl.gz" "$KAIKKI_FR_GZ"
     echo "  [decompress] kaikki-fr.jsonl.gz"
-    gunzip -f "$DATA_DIR/kaikki-fr.jsonl.gz"
+    gunzip -kf "$KAIKKI_FR_GZ"
+    save_checksum "kaikki-fr" "$KAIKKI_FR_GZ"
 fi
 
 # ============================================================
@@ -322,9 +326,52 @@ if [[ -f "$DATA_DIR/kaikki-pt.jsonl" && "$FORCE" != "true" ]]; then
     fi
 fi
 if [[ ! -f "$DATA_DIR/kaikki-pt.jsonl" ]]; then
-    download "https://kaikki.org/dictionary/Portuguese/kaikki.org-dictionary-Portuguese.jsonl.gz" "$DATA_DIR/kaikki-pt.jsonl.gz"
+    KAIKKI_PT_GZ="$DATA_DIR/kaikki-pt.jsonl.gz"
+    download "https://kaikki.org/dictionary/Portuguese/kaikki.org-dictionary-Portuguese.jsonl.gz" "$KAIKKI_PT_GZ"
     echo "  [decompress] kaikki-pt.jsonl.gz"
-    gunzip -f "$DATA_DIR/kaikki-pt.jsonl.gz"
+    gunzip -kf "$KAIKKI_PT_GZ"
+    save_checksum "kaikki-pt" "$KAIKKI_PT_GZ"
+fi
+
+# ============================================================
+# Mandarin — CC-CEDICT
+# ============================================================
+echo "=== CC-CEDICT (Mandarin word list + definitions) ==="
+if [[ -f "$DATA_DIR/cedict_ts.u8" && "$FORCE" != "true" ]]; then
+    # Expect at least 3 MB
+    if check_min_size "$DATA_DIR/cedict_ts.u8" 3000000; then
+        echo "  [skip] cedict_ts.u8 already exists (size ok)"
+    else
+        echo "  [warn] cedict_ts.u8 looks truncated, re-downloading"
+        rm -f "$DATA_DIR/cedict_ts.u8"
+    fi
+fi
+if [[ ! -f "$DATA_DIR/cedict_ts.u8" ]]; then
+    CEDICT_GZ="$DATA_DIR/cedict_ts.u8.gz"
+    download "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz" "$CEDICT_GZ"
+    echo "  [decompress] cedict_ts.u8.gz"
+    gunzip -kf "$CEDICT_GZ"
+    save_checksum "cedict" "$CEDICT_GZ"
+fi
+
+# ============================================================
+# Mandarin — Wiktionary (kaikki)
+# ============================================================
+echo "=== Wiktionary Chinese (compressed) ==="
+if [[ -f "$DATA_DIR/kaikki-zh.jsonl" && "$FORCE" != "true" ]]; then
+    if check_min_size "$DATA_DIR/kaikki-zh.jsonl" 5000000; then
+        echo "  [skip] kaikki-zh.jsonl already exists (size ok)"
+    else
+        echo "  [warn] kaikki-zh.jsonl looks truncated, re-downloading"
+        rm -f "$DATA_DIR/kaikki-zh.jsonl"
+    fi
+fi
+if [[ ! -f "$DATA_DIR/kaikki-zh.jsonl" ]]; then
+    KAIKKI_ZH_GZ="$DATA_DIR/kaikki-zh.jsonl.gz"
+    download "https://kaikki.org/dictionary/Chinese/kaikki.org-dictionary-Chinese.jsonl.gz" "$KAIKKI_ZH_GZ"
+    echo "  [decompress] kaikki-zh.jsonl.gz"
+    gunzip -kf "$KAIKKI_ZH_GZ"
+    save_checksum "kaikki-zh" "$KAIKKI_ZH_GZ"
 fi
 
 echo ""

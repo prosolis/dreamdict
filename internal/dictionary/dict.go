@@ -10,7 +10,7 @@ var (
 	ErrNotSeeded = errors.New("dictionary: database not seeded, run: go run ./cmd/dictimport")
 )
 
-var supportedLangs = []string{"en", "fr", "pt-PT"}
+var supportedLangs = []string{"en", "fr", "pt-PT", "zh"}
 
 func ValidLang(lang string) bool {
 	for _, l := range supportedLangs {

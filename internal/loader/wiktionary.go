@@ -52,6 +52,7 @@ var wiktLangCodeMap = map[string]string{
 	"fr": "fr",
 	"pt": "pt-PT",
 	"en": "en",
+	"zh": "zh",
 }
 
 const (
