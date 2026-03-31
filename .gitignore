@@ -1,5 +1,5 @@
 dict.db
 data/
 !data/.gitkeep
-dictimport
-server
+/dictimport
+/server

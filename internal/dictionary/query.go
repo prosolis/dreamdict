@@ -157,6 +157,24 @@ func (d *Dictionary) WordCount() (map[string]int, error) {
 	return counts, rows.Err()
 }
 
+// Frequency returns the frequency score for a word in a language.
+// Returns 0 if the word is not found or has no frequency data.
+// Higher values indicate more common words.
+func (d *Dictionary) Frequency(word, lang string) (int, error) {
+	var freq int
+	err := d.db.QueryRow(
+		"SELECT COALESCE(frequency, 0) FROM words WHERE word = ? AND lang = ?",
+		strings.ToLower(word), lang,
+	).Scan(&freq)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("dictionary: frequency: %w", err)
+	}
+	return freq, nil
+}
+
 func (d *Dictionary) Meta(key string) (string, error) {
 	var val string
 	err := d.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&val)

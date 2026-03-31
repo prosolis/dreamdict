@@ -14,6 +14,26 @@ type SCOWLLoader struct{}
 
 func (SCOWLLoader) Name() string { return "scowl" }
 
+// scowlFrequency maps SCOWL tier to a frequency score.
+// Higher = more common, matching the Lexique convention.
+// SCOWL 10 = most common words, 70 = rare/specialized.
+var scowlFrequency = map[int]int{
+	10: 1000,
+	20: 800,
+	35: 600,
+	40: 500,
+	50: 400,
+	55: 300,
+	60: 200,
+	65: 100,
+	70: 50,
+}
+
+type scowlFile struct {
+	path string
+	size int
+}
+
 func (SCOWLLoader) Load(db *sql.DB, dataDir string) error {
 	pattern := filepath.Join(dataDir, "scowl", "final", "english-words.*")
 	files, err := filepath.Glob(pattern)
@@ -24,8 +44,8 @@ func (SCOWLLoader) Load(db *sql.DB, dataDir string) error {
 		return fmt.Errorf("scowl: no files matching %s", pattern)
 	}
 
-	// Filter to sizes <= 70
-	var selected []string
+	// Filter to sizes <= 70 and track the tier
+	var selected []scowlFile
 	for _, f := range files {
 		base := filepath.Base(f)
 		// Files are like english-words.10, english-words.20, etc.
@@ -38,7 +58,7 @@ func (SCOWLLoader) Load(db *sql.DB, dataDir string) error {
 			continue
 		}
 		if size <= 70 {
-			selected = append(selected, f)
+			selected = append(selected, scowlFile{path: f, size: size})
 		}
 	}
 
@@ -48,17 +68,18 @@ func (SCOWLLoader) Load(db *sql.DB, dataDir string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("INSERT OR IGNORE INTO words (word, lang) VALUES (?, 'en')")
+	stmt, err := tx.Prepare("INSERT OR IGNORE INTO words (word, lang, frequency) VALUES (?, 'en', ?)")
 	if err != nil {
 		return fmt.Errorf("scowl: prepare: %w", err)
 	}
 	defer stmt.Close()
 
 	var count int
-	for _, f := range selected {
-		n, err := loadSCOWLFile(stmt, f)
+	for _, sf := range selected {
+		freq := scowlFrequency[sf.size]
+		n, err := loadSCOWLFile(stmt, sf.path, freq)
 		if err != nil {
-			return fmt.Errorf("scowl: load %s: %w", f, err)
+			return fmt.Errorf("scowl: load %s: %w", sf.path, err)
 		}
 		count += n
 	}
@@ -70,7 +91,7 @@ func (SCOWLLoader) Load(db *sql.DB, dataDir string) error {
 	return nil
 }
 
-func loadSCOWLFile(stmt *sql.Stmt, path string) (int, error) {
+func loadSCOWLFile(stmt *sql.Stmt, path string, freq int) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -88,7 +109,7 @@ func loadSCOWLFile(stmt *sql.Stmt, path string) (int, error) {
 		if containsAny(word, " ", "'", "-") || containsDigit(word) {
 			continue
 		}
-		if _, err := stmt.Exec(word); err != nil {
+		if _, err := stmt.Exec(word, freq); err != nil {
 			return 0, err
 		}
 		count++
