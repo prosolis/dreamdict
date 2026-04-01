@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -80,8 +82,10 @@ func main() {
 	mux.HandleFunc("GET /synonyms", handleSynonyms(dict))
 	mux.HandleFunc("GET /translate", handleTranslate(dict))
 	mux.HandleFunc("GET /frequency", handleFrequency(dict))
+	mux.HandleFunc("GET /frequency/batch", handleFrequencyBatch(dict))
 	mux.HandleFunc("GET /health", handleHealth(dict, *dbPath))
 
+	serverStart = time.Now()
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	srv := &http.Server{
 		Addr:         addr,
@@ -119,11 +123,29 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+var (
+	queryCount  atomic.Uint64
+	errorCount  atomic.Uint64
+	serverStart time.Time
+	lastPath    atomic.Value // stores string
+)
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r)
+		n := queryCount.Add(1)
+		if rec.status >= 400 {
+			errorCount.Add(1)
+		}
+		lastPath.Store(r.URL.Path)
+		uptime := time.Since(serverStart).Truncate(time.Second)
+		rps := float64(n) / time.Since(serverStart).Seconds()
+		errs := errorCount.Load()
+		last, _ := lastPath.Load().(string)
+		fmt.Fprintf(os.Stdout, "\r\033[2KQueries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
+			n, errs, rps, uptime, last)
 		slog.Debug("request",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -323,6 +345,38 @@ func handleFrequency(dict *dictionary.Dictionary) http.HandlerFunc {
 			"word":      word,
 			"lang":      lang,
 			"frequency": freq,
+		})
+	}
+}
+
+func handleFrequencyBatch(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		wordsParam := r.URL.Query().Get("words")
+		lang := r.URL.Query().Get("lang")
+		if wordsParam == "" || lang == "" {
+			writeError(w, 400, "bad_request", "words and lang are required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		words := strings.Split(wordsParam, ",")
+		if len(words) > 100 {
+			writeError(w, 400, "bad_request", "maximum 100 words per batch")
+			return
+		}
+
+		freqs, err := dict.FrequencyBatch(words, lang)
+		if err != nil {
+			slog.Error("frequency batch", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"lang":        lang,
+			"frequencies": freqs,
 		})
 	}
 }
