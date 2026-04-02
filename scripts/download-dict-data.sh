@@ -143,7 +143,10 @@ fi
 # ============================================================
 # English — WordNet
 # ============================================================
-echo "=== WordNet (English definitions + synonyms) ==="
+echo "=== WordNet 3.0 (English definitions + synonyms) ==="
+# IMPORTANT: We use WordNet 3.0, NOT 3.1, because WOLF's synset IDs
+# use WN 3.0 byte offsets (eng-30-XXXXXXXX). WN 3.1 has different
+# offsets, so cross-language synset backing would silently fail.
 WN_DIR="$DATA_DIR/wordnet"
 if [[ -d "$WN_DIR/dict" && "$FORCE" != "true" ]]; then
     # Verify the dict directory has the expected data files
@@ -156,18 +159,88 @@ if [[ -d "$WN_DIR/dict" && "$FORCE" != "true" ]]; then
 fi
 if [[ ! -d "$WN_DIR/dict" ]]; then
     WN_TAR="$DATA_DIR/wordnet.tar.gz"
-    # Princeton's official URL is down (403); use GitHub mirror
-    download "https://raw.githubusercontent.com/zweiein/WNdb/master/WNdb-3.1.tar.gz" "$WN_TAR"
+    # Use WordNet 3.0 to match WOLF synset offsets
+    download "https://wordnetcode.princeton.edu/3.0/WNdb-3.0.tar.gz" "$WN_TAR" 2>/dev/null || {
+        echo "  [FAIL] Could not download WordNet 3.0"
+        exit 1
+    }
     echo "  [extract] $WN_TAR"
     mkdir -p "$WN_DIR"
     tar -xzf "$WN_TAR" -C "$WN_DIR"
     save_checksum "wordnet" "$WN_TAR"
     rm -f "$WN_TAR"
-    # The archive extracts to WNdb-3.1/dict/ — normalize to wordnet/dict/
-    if [[ -d "$WN_DIR/WNdb-3.1/dict" ]]; then
-        mv "$WN_DIR/WNdb-3.1/dict" "$WN_DIR/dict"
-        rm -rf "$WN_DIR/WNdb-3.1"
+    # Normalize extraction directory — may be WNdb-3.0/ or dict/
+    for d in "WNdb-3.0" "WNdb-3.1"; do
+        if [[ -d "$WN_DIR/$d/dict" ]]; then
+            mv "$WN_DIR/$d/dict" "$WN_DIR/dict"
+            rm -rf "$WN_DIR/$d"
+            break
+        fi
+    done
+fi
+
+# ============================================================
+# English — SUBTLEX-US (word frequency)
+# ============================================================
+echo "=== SUBTLEX-US (English word frequency) ==="
+SUBTLEX_FILE="$DATA_DIR/SUBTLEX-US.tsv"
+if [[ -f "$SUBTLEX_FILE" && "$FORCE" != "true" ]]; then
+    if check_min_size "$SUBTLEX_FILE" 1000000; then
+        echo "  [skip] SUBTLEX-US.tsv already exists (size ok)"
+    else
+        echo "  [warn] SUBTLEX-US.tsv looks truncated, re-downloading"
+        rm -f "$SUBTLEX_FILE"
     fi
+fi
+if [[ ! -f "$SUBTLEX_FILE" ]]; then
+    # Try the GitHub-hosted copy first (TSV, direct download), then Ghent University.
+    download "https://raw.githubusercontent.com/Wikipedia2Vec/Wikipedia2Vec/master/resources/SUBTLEX-US.tsv" "$SUBTLEX_FILE" 2>/dev/null || \
+    download "https://raw.githubusercontent.com/Wikipedia2Vec/Wikipedia2Vec/refs/heads/master/resources/SUBTLEX-US.tsv" "$SUBTLEX_FILE" 2>/dev/null || true
+
+    if [[ ! -f "$SUBTLEX_FILE" ]]; then
+        # Fallback: Ghent University zip (may require browser)
+        SUBTLEX_ZIP="$DATA_DIR/subtlex-us.zip"
+        download "https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus/subtlexus2.zip/at_download/file" "$SUBTLEX_ZIP" 2>/dev/null || \
+        download "https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus/subtlexus2.zip" "$SUBTLEX_ZIP" 2>/dev/null || true
+
+        if [[ -f "$SUBTLEX_ZIP" ]]; then
+            echo "  [extract] $SUBTLEX_ZIP"
+            unzip -qo "$SUBTLEX_ZIP" -d "$DATA_DIR/subtlex-tmp" 2>/dev/null || true
+            FOUND_SUBTLEX=$(find "$DATA_DIR/subtlex-tmp" -type f \( -name "*.tsv" -o -name "*.txt" -o -name "*.csv" \) | head -1)
+            if [[ -n "$FOUND_SUBTLEX" ]]; then
+                mv "$FOUND_SUBTLEX" "$SUBTLEX_FILE"
+                echo "  [ok] extracted to SUBTLEX-US.tsv"
+            else
+                echo "  [warn] could not find TSV in archive — SUBTLEX may need manual conversion from XLSX"
+            fi
+            rm -rf "$DATA_DIR/subtlex-tmp" "$SUBTLEX_ZIP"
+        else
+            echo "  [warn] SUBTLEX-US download failed."
+            echo "  Download manually from: https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus"
+            echo "  Export the XLSX to TSV and place as: $SUBTLEX_FILE"
+        fi
+    fi
+fi
+
+# ============================================================
+# English — CMU Pronouncing Dictionary
+# ============================================================
+echo "=== CMUdict (English pronunciation) ==="
+CMUDICT_FILE="$DATA_DIR/cmudict-0.7b"
+if [[ -f "$CMUDICT_FILE" && "$FORCE" != "true" ]]; then
+    if check_min_size "$CMUDICT_FILE" 2000000; then
+        echo "  [skip] cmudict-0.7b already exists (size ok)"
+    else
+        echo "  [warn] cmudict-0.7b looks truncated, re-downloading"
+        rm -f "$CMUDICT_FILE"
+    fi
+fi
+if [[ ! -f "$CMUDICT_FILE" ]]; then
+    download "https://svn.code.sf.net/p/cmusphinx/code/trunk/cmudict/cmudict-0.7b" "$CMUDICT_FILE" 2>/dev/null || \
+    download "https://raw.githubusercontent.com/cmusphinx/cmudict/master/cmudict-0.7b" "$CMUDICT_FILE" 2>/dev/null || \
+    download "https://raw.githubusercontent.com/Alexir/CMUdict/master/cmudict-0.7b" "$CMUDICT_FILE" 2>/dev/null || {
+        echo "  [warn] CMUdict download failed. Download manually and place at: $CMUDICT_FILE"
+    }
 fi
 
 # ============================================================
@@ -206,8 +279,30 @@ for dic in "$HUNSPELL_DIR/fr_FR/fr.dic" "$HUNSPELL_DIR/pt_PT/pt_PT.dic"; do
     fi
 done
 cp -f "$HUNSPELL_DIR/fr_FR/fr.dic" "$DATA_DIR/fr_FR/fr.dic"
-cp -f "$HUNSPELL_DIR/fr_FR/fr.aff" "$DATA_DIR/fr_FR/fr.aff" 2>/dev/null || true
+if [[ -f "$HUNSPELL_DIR/fr_FR/fr.aff" ]]; then
+    cp -f "$HUNSPELL_DIR/fr_FR/fr.aff" "$DATA_DIR/fr_FR/fr.aff"
+else
+    FR_AFF=$(find "$HUNSPELL_DIR/fr_FR" -name "*.aff" -type f 2>/dev/null | head -1)
+    if [[ -n "$FR_AFF" ]]; then
+        cp -f "$FR_AFF" "$DATA_DIR/fr_FR/fr.aff"
+        echo "  [ok] found fr .aff file at: $FR_AFF"
+    else
+        echo "  [warn] no .aff file found for fr — affix expansion will be skipped"
+    fi
+fi
 cp -f "$HUNSPELL_DIR/pt_PT/pt_PT.dic" "$DATA_DIR/pt_PT/pt_PT.dic"
+# .aff file may be in pt_PT/ or at a different path in the repo
+if [[ -f "$HUNSPELL_DIR/pt_PT/pt_PT.aff" ]]; then
+    cp -f "$HUNSPELL_DIR/pt_PT/pt_PT.aff" "$DATA_DIR/pt_PT/pt_PT.aff"
+else
+    PT_AFF=$(find "$HUNSPELL_DIR/pt_PT" -name "*.aff" -type f 2>/dev/null | head -1)
+    if [[ -n "$PT_AFF" ]]; then
+        cp -f "$PT_AFF" "$DATA_DIR/pt_PT/pt_PT.aff"
+        echo "  [ok] found pt_PT .aff file at: $PT_AFF"
+    else
+        echo "  [warn] no .aff file found for pt_PT — affix expansion will be skipped"
+    fi
+fi
 
 # ============================================================
 # French — Lexique
@@ -311,6 +406,55 @@ if [[ ! -f "$DATA_DIR/dicionario-aberto.xml" ]]; then
         echo "  [FAIL] dicionario-aberto.xml seems too small after merge"
         exit 1
     fi
+fi
+
+# ============================================================
+# pt-PT — CETEMPúblico frequency (or fallback frequency list)
+# ============================================================
+echo "=== Portuguese frequency data ==="
+PT_FREQ_FILE="$DATA_DIR/cetempublico-freq.tsv"
+if [[ -f "$PT_FREQ_FILE" && "$FORCE" != "true" ]]; then
+    echo "  [skip] cetempublico-freq.tsv already exists"
+elif [[ -f "$DATA_DIR/pt-freq.tsv" && "$FORCE" != "true" ]]; then
+    echo "  [skip] pt-freq.tsv already exists"
+else
+    echo "  [info] CETEMPúblico frequency data requires manual download from Linguateca."
+    echo "  Visit: https://www.linguateca.pt/acesso/corpus.php?corpus=CETEMPUBLICO"
+    echo "  Generate a word frequency list and save as: $PT_FREQ_FILE"
+    echo "  Format: word<TAB>frequency (one per line)"
+    echo "  The import will proceed without frequency data if this file is absent."
+fi
+
+# ============================================================
+# pt-PT — Open Multilingual Wordnet
+# ============================================================
+echo "=== Open Multilingual Wordnet (Portuguese synset mappings) ==="
+OMW_DIR="$DATA_DIR/omw"
+OMW_FILE="$OMW_DIR/wn-data-por.tab"
+if [[ -f "$OMW_FILE" && "$FORCE" != "true" ]]; then
+    echo "  [skip] wn-data-por.tab already exists"
+fi
+if [[ ! -f "$OMW_FILE" ]]; then
+    OMW_REPO="$DATA_DIR/omw-data-repo"
+    clone_if_missing "https://github.com/omwn/omw-data.git" "$OMW_REPO"
+    mkdir -p "$OMW_DIR"
+    # Find the Portuguese tab file in the repo
+    FOUND_OMW=$(find "$OMW_REPO" -type f -name "wn-data-por.tab" 2>/dev/null | head -1)
+    if [[ -n "$FOUND_OMW" ]]; then
+        cp "$FOUND_OMW" "$OMW_FILE"
+        echo "  [ok] extracted wn-data-por.tab"
+    else
+        # Try alternative naming
+        FOUND_OMW=$(find "$OMW_REPO" -type f -name "*por*" -name "*.tab" 2>/dev/null | head -1)
+        if [[ -n "$FOUND_OMW" ]]; then
+            cp "$FOUND_OMW" "$OMW_FILE"
+            echo "  [ok] extracted Portuguese OMW data"
+        else
+            echo "  [warn] could not find Portuguese data in OMW repo"
+            echo "  The import will proceed without synset mappings for pt-PT."
+        fi
+    fi
+    rm -rf "$OMW_REPO"
 fi
 
 # ============================================================

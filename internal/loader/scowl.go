@@ -68,7 +68,8 @@ func (SCOWLLoader) Load(db *sql.DB, dataDir string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("INSERT OR IGNORE INTO words (word, lang, frequency) VALUES (?, 'en', ?)")
+	stmt, err := tx.Prepare(`INSERT INTO words (word, lang, frequency) VALUES (?, 'en', ?)
+		ON CONFLICT(word, lang) DO UPDATE SET frequency = MAX(frequency, excluded.frequency)`)
 	if err != nil {
 		return fmt.Errorf("scowl: prepare: %w", err)
 	}

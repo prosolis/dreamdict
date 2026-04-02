@@ -80,9 +80,13 @@ func main() {
 	mux.HandleFunc("GET /random", handleRandom(dict))
 	mux.HandleFunc("GET /define", handleDefine(dict))
 	mux.HandleFunc("GET /synonyms", handleSynonyms(dict))
+	mux.HandleFunc("GET /antonyms", handleAntonyms(dict))
 	mux.HandleFunc("GET /translate", handleTranslate(dict))
+	mux.HandleFunc("GET /backing", handleBacking(dict))
 	mux.HandleFunc("GET /frequency", handleFrequency(dict))
 	mux.HandleFunc("GET /frequency/batch", handleFrequencyBatch(dict))
+	mux.HandleFunc("GET /pronunciation", handlePronunciation(dict))
+	mux.HandleFunc("GET /etymology", handleEtymology(dict))
 	mux.HandleFunc("GET /health", handleHealth(dict, *dbPath))
 
 	serverStart = time.Now()
@@ -220,8 +224,18 @@ func handleRandom(dict *dictionary.Dictionary) http.HandlerFunc {
 				opts.MinFrequency = n
 			}
 		}
+		if v := r.URL.Query().Get("min_difficulty"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				opts.MinDifficulty = f
+			}
+		}
+		if v := r.URL.Query().Get("max_difficulty"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				opts.MaxDifficulty = f
+			}
+		}
 
-		word, err := dict.RandomWord(lang, opts)
+		result, err := dict.RandomWord(lang, opts)
 		if err == dictionary.ErrNoMatch {
 			writeError(w, 404, "no_match", "no words match the given filters")
 			return
@@ -231,7 +245,11 @@ func handleRandom(dict *dictionary.Dictionary) http.HandlerFunc {
 			writeError(w, 500, "internal", "internal error")
 			return
 		}
-		writeJSON(w, 200, map[string]string{"word": word})
+		resp := map[string]any{"word": result.Word}
+		if result.Difficulty != nil {
+			resp["difficulty"] = *result.Difficulty
+		}
+		writeJSON(w, 200, resp)
 	}
 }
 
@@ -381,8 +399,125 @@ func handleFrequencyBatch(dict *dictionary.Dictionary) http.HandlerFunc {
 	}
 }
 
-func handleHealth(dict *dictionary.Dictionary, dbPath string) http.HandlerFunc {
+func handleAntonyms(dict *dictionary.Dictionary) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		lang := r.URL.Query().Get("lang")
+		if word == "" || lang == "" {
+			writeError(w, 400, "bad_request", "word and lang are required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		ants, err := dict.Antonyms(word, lang)
+		if err != nil {
+			slog.Error("antonyms", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"word":     word,
+			"lang":     lang,
+			"antonyms": ants,
+		})
+	}
+}
+
+func handleBacking(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		lang := r.URL.Query().Get("lang")
+		if word == "" || lang == "" {
+			writeError(w, 400, "bad_request", "word and lang are required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		equivs, err := dict.EnglishBacking(word, lang)
+		if err != nil {
+			slog.Error("backing", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"word":        word,
+			"lang":        lang,
+			"equivalents": equivs,
+		})
+	}
+}
+
+func handlePronunciation(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		lang := r.URL.Query().Get("lang")
+		if word == "" || lang == "" {
+			writeError(w, 400, "bad_request", "word and lang are required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		prons, err := dict.Pronunciation(word, lang)
+		if err != nil {
+			slog.Error("pronunciation", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"word":           word,
+			"lang":           lang,
+			"pronunciations": prons,
+		})
+	}
+}
+
+func handleEtymology(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		lang := r.URL.Query().Get("lang")
+		if word == "" || lang == "" {
+			writeError(w, 400, "bad_request", "word and lang are required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		etym, err := dict.Etymology(word, lang)
+		if err != nil {
+			slog.Error("etymology", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"word":      word,
+			"lang":      lang,
+			"etymology": etym,
+		})
+	}
+}
+
+func handleHealth(dict *dictionary.Dictionary, dbPath string) http.HandlerFunc {
+	// The database is read-only at runtime, so cache the health response
+	// after the first (slow) computation.
+	var cached atomic.Value
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if v := cached.Load(); v != nil {
+			writeJSON(w, 200, v)
+			return
+		}
+
 		wordCounts, err := dict.WordCount()
 		if err != nil {
 			slog.Error("health: word count", "error", err)
@@ -409,13 +544,15 @@ func handleHealth(dict *dictionary.Dictionary, dbPath string) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, 200, map[string]any{
+		resp := map[string]any{
 			"status":         "ok",
 			"db_path":        dbPath,
 			"word_counts":    wordCounts,
 			"def_counts":     defCounts,
 			"imported_at":    importedAt,
 			"schema_version": schemaVersion,
-		})
+		}
+		cached.Store(resp)
+		writeJSON(w, 200, resp)
 	}
 }

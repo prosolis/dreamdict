@@ -34,10 +34,17 @@ type wiktEntry struct {
 	Synonyms []struct {
 		Word string `json:"word"`
 	} `json:"synonyms"`
+	Antonyms []struct {
+		Word string `json:"word"`
+	} `json:"antonyms"`
 	Translations []struct {
 		Code string `json:"code"`
 		Word string `json:"word"`
 	} `json:"translations"`
+	Sounds []struct {
+		IPA string `json:"ipa"`
+	} `json:"sounds"`
+	EtymologyText string `json:"etymology_text"`
 }
 
 var wiktPOSMap = map[string]string{
@@ -59,6 +66,9 @@ const (
 	defSQL   = `INSERT OR IGNORE INTO definitions (word_id, pos, gloss, source, priority) SELECT id, ?, ?, 'wiktionary', 20 FROM words WHERE word = ? AND lang = ?`
 	synSQL   = `INSERT OR IGNORE INTO synonyms (word_id, synonym, source) SELECT id, ?, 'wiktionary' FROM words WHERE word = ? AND lang = ?`
 	transSQL = `INSERT OR IGNORE INTO translations (word_id, translation, target_lang, source) SELECT id, ?, ?, 'wiktionary' FROM words WHERE word = ? AND lang = ?`
+	antSQL   = `INSERT OR IGNORE INTO antonyms (word_id, antonym, source) SELECT id, ?, 'wiktionary' FROM words WHERE word = ? AND lang = ?`
+	pronSQL  = `INSERT OR IGNORE INTO pronunciations (word_id, format, value, source) SELECT id, 'ipa', ?, 'wiktionary' FROM words WHERE word = ? AND lang = ?`
+	etymSQL  = `INSERT OR IGNORE INTO etymology (word_id, text, source) SELECT id, ?, 'wiktionary' FROM words WHERE word = ? AND lang = ?`
 )
 
 // txBatch owns a transaction and its prepared statements.
@@ -68,6 +78,9 @@ type txBatch struct {
 	stmtDef   *sql.Stmt
 	stmtSyn   *sql.Stmt
 	stmtTrans *sql.Stmt
+	stmtAnt   *sql.Stmt
+	stmtPron  *sql.Stmt
+	stmtEtym  *sql.Stmt
 }
 
 func newTxBatch(db *sql.DB) (*txBatch, error) {
@@ -77,41 +90,67 @@ func newTxBatch(db *sql.DB) (*txBatch, error) {
 	}
 	b := &txBatch{tx: tx}
 
-	b.stmtDef, err = tx.Prepare(defSQL)
-	if err != nil {
-		tx.Rollback()
+	prepareOrRollback := func(sql string) (*sql.Stmt, error) {
+		s, e := tx.Prepare(sql)
+		if e != nil {
+			b.closeStmts()
+			tx.Rollback()
+		}
+		return s, e
+	}
+
+	if b.stmtDef, err = prepareOrRollback(defSQL); err != nil {
 		return nil, fmt.Errorf("prepare def: %w", err)
 	}
-	b.stmtSyn, err = tx.Prepare(synSQL)
-	if err != nil {
-		b.stmtDef.Close()
-		tx.Rollback()
+	if b.stmtSyn, err = prepareOrRollback(synSQL); err != nil {
 		return nil, fmt.Errorf("prepare syn: %w", err)
 	}
-	b.stmtTrans, err = tx.Prepare(transSQL)
-	if err != nil {
-		b.stmtDef.Close()
-		b.stmtSyn.Close()
-		tx.Rollback()
+	if b.stmtTrans, err = prepareOrRollback(transSQL); err != nil {
 		return nil, fmt.Errorf("prepare trans: %w", err)
 	}
+	if b.stmtAnt, err = prepareOrRollback(antSQL); err != nil {
+		return nil, fmt.Errorf("prepare ant: %w", err)
+	}
+	if b.stmtPron, err = prepareOrRollback(pronSQL); err != nil {
+		return nil, fmt.Errorf("prepare pron: %w", err)
+	}
+	if b.stmtEtym, err = prepareOrRollback(etymSQL); err != nil {
+		return nil, fmt.Errorf("prepare etym: %w", err)
+	}
 	return b, nil
+}
+
+func (b *txBatch) closeStmts() {
+	if b.stmtDef != nil {
+		b.stmtDef.Close()
+	}
+	if b.stmtSyn != nil {
+		b.stmtSyn.Close()
+	}
+	if b.stmtTrans != nil {
+		b.stmtTrans.Close()
+	}
+	if b.stmtAnt != nil {
+		b.stmtAnt.Close()
+	}
+	if b.stmtPron != nil {
+		b.stmtPron.Close()
+	}
+	if b.stmtEtym != nil {
+		b.stmtEtym.Close()
+	}
 }
 
 func (b *txBatch) Close() {
 	if b == nil {
 		return
 	}
-	b.stmtDef.Close()
-	b.stmtSyn.Close()
-	b.stmtTrans.Close()
+	b.closeStmts()
 	b.tx.Rollback() // no-op after commit
 }
 
 func (b *txBatch) Commit() error {
-	b.stmtDef.Close()
-	b.stmtSyn.Close()
-	b.stmtTrans.Close()
+	b.closeStmts()
 	return b.tx.Commit()
 }
 
@@ -131,8 +170,8 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 10*1024*1024), 10*1024*1024)
 
-	var defCount, synCount, transCount, lineCount int
-	commitInterval := 10000
+	var defCount, synCount, transCount, antCount, pronCount, etymCount, lineCount int
+	commitInterval := 50000
 
 	for scanner.Scan() {
 		lineCount++
@@ -183,6 +222,40 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 			synCount++
 		}
 
+		// Process antonyms
+		for _, ant := range entry.Antonyms {
+			antWord := strings.ToLower(ant.Word)
+			if antWord == "" || containsDigit(antWord) || containsSpace(antWord) {
+				continue
+			}
+			if _, err := batch.stmtAnt.Exec(antWord, word, lang); err != nil {
+				return fmt.Errorf("wiktionary: insert ant: %w", err)
+			}
+			antCount++
+		}
+
+		// Process pronunciations (IPA)
+		for _, sound := range entry.Sounds {
+			ipa := strings.TrimSpace(sound.IPA)
+			if ipa == "" {
+				continue
+			}
+			if _, err := batch.stmtPron.Exec(ipa, word, lang); err != nil {
+				return fmt.Errorf("wiktionary: insert pron: %w", err)
+			}
+			pronCount++
+			break // only first IPA per entry
+		}
+
+		// Process etymology
+		etymText := strings.TrimSpace(entry.EtymologyText)
+		if etymText != "" && len(etymText) > 10 && !strings.HasPrefix(etymText, "See ") {
+			if _, err := batch.stmtEtym.Exec(etymText, word, lang); err != nil {
+				return fmt.Errorf("wiktionary: insert etym: %w", err)
+			}
+			etymCount++
+		}
+
 		// Process translations
 		for _, tr := range entry.Translations {
 			targetLang, ok := wiktLangCodeMap[tr.Code]
@@ -218,7 +291,7 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 		return fmt.Errorf("wiktionary: final commit: %w", err)
 	}
 
-	slog.Info("wiktionary loaded", "lang", lang, "definitions", defCount, "synonyms", synCount, "translations", transCount)
+	slog.Info("wiktionary loaded", "lang", lang, "definitions", defCount, "synonyms", synCount, "translations", transCount, "antonyms", antCount, "pronunciations", pronCount, "etymologies", etymCount)
 	return nil
 }
 

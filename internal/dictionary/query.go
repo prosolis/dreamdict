@@ -18,8 +18,13 @@ func (d *Dictionary) IsValidWord(word, lang string) (bool, error) {
 	return exists, nil
 }
 
-func (d *Dictionary) RandomWord(lang string, opts Options) (string, error) {
-	query := "SELECT word FROM words WHERE lang = ?"
+type RandomResult struct {
+	Word       string   `json:"word"`
+	Difficulty *float64 `json:"difficulty,omitempty"`
+}
+
+func (d *Dictionary) RandomWord(lang string, opts Options) (RandomResult, error) {
+	query := "SELECT word, difficulty FROM words WHERE lang = ?"
 	args := []any{lang}
 
 	if opts.POS != "" {
@@ -38,18 +43,30 @@ func (d *Dictionary) RandomWord(lang string, opts Options) (string, error) {
 		query += " AND frequency >= ?"
 		args = append(args, opts.MinFrequency)
 	}
+	if opts.MinDifficulty > 0 {
+		query += " AND difficulty >= ?"
+		args = append(args, opts.MinDifficulty)
+	}
+	if opts.MaxDifficulty > 0 {
+		query += " AND difficulty <= ?"
+		args = append(args, opts.MaxDifficulty)
+	}
 
 	query += " ORDER BY RANDOM() LIMIT 1"
 
-	var word string
-	err := d.db.QueryRow(query, args...).Scan(&word)
+	var result RandomResult
+	var diff sql.NullFloat64
+	err := d.db.QueryRow(query, args...).Scan(&result.Word, &diff)
 	if err == sql.ErrNoRows {
-		return "", ErrNoMatch
+		return RandomResult{}, ErrNoMatch
 	}
 	if err != nil {
-		return "", fmt.Errorf("dictionary: random word: %w", err)
+		return RandomResult{}, fmt.Errorf("dictionary: random word: %w", err)
 	}
-	return word, nil
+	if diff.Valid {
+		result.Difficulty = &diff.Float64
+	}
+	return result, nil
 }
 
 func (d *Dictionary) Define(word, lang string) ([]Definition, error) {
@@ -175,6 +192,44 @@ func (d *Dictionary) Frequency(word, lang string) (int, error) {
 	return freq, nil
 }
 
+// FrequencyBatch returns frequency scores for multiple words in a language.
+// Words not found or without frequency data are returned with a score of 0.
+func (d *Dictionary) FrequencyBatch(words []string, lang string) (map[string]int, error) {
+	if len(words) == 0 {
+		return map[string]int{}, nil
+	}
+
+	placeholders := make([]string, len(words))
+	args := make([]any, 0, len(words)+1)
+	args = append(args, lang)
+	for i, w := range words {
+		placeholders[i] = "?"
+		args = append(args, strings.ToLower(w))
+	}
+
+	query := fmt.Sprintf(
+		"SELECT word, COALESCE(frequency, 0) FROM words WHERE lang = ? AND word IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: frequency batch: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int, len(words))
+	for rows.Next() {
+		var word string
+		var freq int
+		if err := rows.Scan(&word, &freq); err != nil {
+			return nil, fmt.Errorf("dictionary: frequency batch scan: %w", err)
+		}
+		result[word] = freq
+	}
+	return result, rows.Err()
+}
+
 func (d *Dictionary) Meta(key string) (string, error) {
 	var val string
 	err := d.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&val)
@@ -185,6 +240,143 @@ func (d *Dictionary) Meta(key string) (string, error) {
 		return "", fmt.Errorf("dictionary: meta %s: %w", key, err)
 	}
 	return val, nil
+}
+
+func (d *Dictionary) Antonyms(word, lang string) ([]string, error) {
+	rows, err := d.db.Query(`
+		SELECT DISTINCT a.antonym
+		FROM antonyms a
+		JOIN words w ON w.id = a.word_id
+		WHERE w.word = ? AND w.lang = ?
+		ORDER BY a.antonym`,
+		strings.ToLower(word), lang,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: antonyms: %w", err)
+	}
+	defer rows.Close()
+
+	var ants []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, fmt.Errorf("dictionary: antonyms scan: %w", err)
+		}
+		ants = append(ants, a)
+	}
+	if ants == nil {
+		ants = []string{}
+	}
+	return ants, rows.Err()
+}
+
+// EnglishBacking returns English words that share a synset with the given
+// non-English word, providing semantic equivalents with WordNet definitions.
+func (d *Dictionary) EnglishBacking(word, lang string) ([]EnglishEquivalent, error) {
+	// Find synsets for this word, then find English words in those synsets,
+	// along with their WordNet definitions.
+	rows, err := d.db.Query(`
+		SELECT DISTINCT ew.word,
+			COALESCE(
+				(SELECT d.gloss FROM definitions d
+				 WHERE d.word_id = ew.id AND d.source = 'wordnet' AND d.pos = s.pos
+				 ORDER BY d.priority ASC LIMIT 1),
+				(SELECT d.gloss FROM definitions d
+				 WHERE d.word_id = ew.id AND d.source = 'wordnet'
+				 ORDER BY d.priority ASC LIMIT 1),
+				''
+			) AS gloss,
+			s.synset_id
+		FROM words w
+		JOIN word_synsets ws ON ws.word_id = w.id
+		JOIN synsets s ON s.id = ws.synset_id
+		JOIN word_synsets ews ON ews.synset_id = s.id
+		JOIN words ew ON ew.id = ews.word_id AND ew.lang = 'en'
+		WHERE w.word = ? AND w.lang = ?
+		ORDER BY s.synset_id, ew.word`,
+		strings.ToLower(word), lang,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: english backing: %w", err)
+	}
+	defer rows.Close()
+
+	var results []EnglishEquivalent
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var eq EnglishEquivalent
+		if err := rows.Scan(&eq.Word, &eq.Definition, &eq.Synset); err != nil {
+			return nil, fmt.Errorf("dictionary: english backing scan: %w", err)
+		}
+		key := eq.Word + "|" + eq.Synset
+		if !seen[key] {
+			seen[key] = true
+			results = append(results, eq)
+		}
+	}
+	if results == nil {
+		results = []EnglishEquivalent{}
+	}
+
+	// Fallback to translations table if no synset matches
+	if len(results) == 0 {
+		trans, err := d.Translate(word, lang, "en")
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range trans {
+			results = append(results, EnglishEquivalent{Word: t})
+		}
+	}
+
+	return results, rows.Err()
+}
+
+func (d *Dictionary) Pronunciation(word, lang string) ([]Pronunciation, error) {
+	rows, err := d.db.Query(`
+		SELECT p.format, p.value, p.source
+		FROM pronunciations p
+		JOIN words w ON w.id = p.word_id
+		WHERE w.word = ? AND w.lang = ?
+		ORDER BY p.source, p.format`,
+		strings.ToLower(word), lang,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: pronunciation: %w", err)
+	}
+	defer rows.Close()
+
+	var prons []Pronunciation
+	for rows.Next() {
+		var p Pronunciation
+		if err := rows.Scan(&p.Format, &p.Value, &p.Source); err != nil {
+			return nil, fmt.Errorf("dictionary: pronunciation scan: %w", err)
+		}
+		prons = append(prons, p)
+	}
+	if prons == nil {
+		prons = []Pronunciation{}
+	}
+	return prons, rows.Err()
+}
+
+func (d *Dictionary) Etymology(word, lang string) (string, error) {
+	var text string
+	err := d.db.QueryRow(`
+		SELECT e.text
+		FROM etymology e
+		JOIN words w ON w.id = e.word_id
+		WHERE w.word = ? AND w.lang = ?
+		LIMIT 1`,
+		strings.ToLower(word), lang,
+	).Scan(&text)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("dictionary: etymology: %w", err)
+	}
+	return text, nil
 }
 
 func (d *Dictionary) DefCount() (map[string]int, error) {

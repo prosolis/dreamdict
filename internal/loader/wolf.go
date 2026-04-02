@@ -58,14 +58,32 @@ func (WOLFLoader) Load(db *sql.DB, dataDir string) error {
 	}
 	defer stmtSyn.Close()
 
+	stmtSynset, err := tx.Prepare(`
+		INSERT OR IGNORE INTO synsets (synset_id, pos) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("wolf: prepare synset: %w", err)
+	}
+	defer stmtSynset.Close()
+
+	stmtWordSynset, err := tx.Prepare(`
+		INSERT OR IGNORE INTO word_synsets (word_id, synset_id, source)
+		SELECT w.id, s.id, 'wolf'
+		FROM words w, synsets s
+		WHERE w.word = ? AND w.lang = 'fr' AND s.synset_id = ?`)
+	if err != nil {
+		return fmt.Errorf("wolf: prepare word_synset: %w", err)
+	}
+	defer stmtWordSynset.Close()
+
 	posMap := map[string]string{
 		"n": "noun",
 		"v": "verb",
 		"a": "adjective",
 		"r": "adverb",
+		"b": "adverb", // WOLF uses "b" for adverb
 	}
 
-	var defCount, synCount, decodeErrors int
+	var defCount, synCount, synsetCount, decodeErrors int
 
 	decoder := xml.NewDecoder(reader)
 	for {
@@ -83,6 +101,8 @@ func (WOLFLoader) Load(db *sql.DB, dataDir string) error {
 		}
 
 		var synset struct {
+			ID       string `xml:"ID"`
+			IDAlt    string `xml:"id,attr"`
 			POS      string `xml:"POS"`
 			Literals []struct {
 				Value string `xml:",chardata"`
@@ -95,14 +115,35 @@ func (WOLFLoader) Load(db *sql.DB, dataDir string) error {
 			continue
 		}
 
-		pos := posMap[strings.ToLower(synset.POS)]
+		pos := posMap[strings.ToLower(strings.TrimSpace(synset.POS))]
 		gloss := strings.TrimSpace(synset.DEF)
+
+		// WOLF synset IDs are Princeton WordNet IDs (e.g., "eng-30-00914031-a")
+		// Normalize to our format: "00914031-a"
+		rawID := synset.ID
+		if rawID == "" {
+			rawID = synset.IDAlt
+		}
+		wolfSynsetID := normalizeWOLFSynsetID(rawID)
 
 		var words []string
 		for _, lit := range synset.Literals {
 			w := strings.ToLower(strings.TrimSpace(lit.Value))
 			if w != "" && !containsDigit(w) && !containsSpace(w) {
 				words = append(words, w)
+			}
+		}
+
+		// Insert synset and link words
+		if wolfSynsetID != "" && pos != "" {
+			if _, err := stmtSynset.Exec(wolfSynsetID, pos); err != nil {
+				return fmt.Errorf("wolf: insert synset: %w", err)
+			}
+			synsetCount++
+			for _, w := range words {
+				if _, err := stmtWordSynset.Exec(w, wolfSynsetID); err != nil {
+					return fmt.Errorf("wolf: insert word_synset: %w", err)
+				}
 			}
 		}
 
@@ -135,6 +176,35 @@ func (WOLFLoader) Load(db *sql.DB, dataDir string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("wolf: commit: %w", err)
 	}
-	slog.Info("wolf loaded", "definitions", defCount, "synonyms", synCount)
+	slog.Info("wolf loaded", "definitions", defCount, "synonyms", synCount, "synsets", synsetCount)
 	return nil
+}
+
+// normalizeWOLFSynsetID extracts the Princeton synset ID from WOLF format.
+// WOLF uses "eng-30-XXXXXXXX-P" format; we want "XXXXXXXX-P".
+// WOLF uses "b" for adverb POS but WordNet uses "r", so we remap.
+func normalizeWOLFSynsetID(wolfID string) string {
+	wolfID = strings.TrimSpace(wolfID)
+	// Common format: "eng-30-00914031-a"
+	parts := strings.Split(wolfID, "-")
+	if len(parts) >= 4 && parts[0] == "eng" {
+		posSuffix := wolfPosSuffix(parts[3])
+		return parts[2] + "-" + posSuffix
+	}
+	// Fallback: if it's already in our format
+	if len(parts) == 2 && len(parts[0]) == 8 {
+		return parts[0] + "-" + wolfPosSuffix(parts[1])
+	}
+	return ""
+}
+
+// wolfPosSuffix maps WOLF POS codes to WordNet synset ID suffixes.
+func wolfPosSuffix(pos string) string {
+	pos = strings.TrimSpace(pos)
+	switch pos {
+	case "b":
+		return "r" // WOLF "b" (adverb) → WordNet "r"
+	default:
+		return pos
+	}
 }

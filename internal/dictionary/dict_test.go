@@ -89,30 +89,30 @@ func TestRandomWord(t *testing.T) {
 	d := NewFromDB(db)
 
 	// Basic random word
-	word, err := d.RandomWord("en", Options{})
+	result, err := d.RandomWord("en", Options{})
 	if err != nil {
 		t.Fatalf("RandomWord: %v", err)
 	}
-	if word == "" {
+	if result.Word == "" {
 		t.Error("RandomWord returned empty string")
 	}
 
 	// With POS filter
-	word, err = d.RandomWord("en", Options{POS: "adjective"})
+	result, err = d.RandomWord("en", Options{POS: "adjective"})
 	if err != nil {
 		t.Fatalf("RandomWord with POS: %v", err)
 	}
-	if word != "happy" {
-		t.Errorf("RandomWord(adjective) = %q, want happy", word)
+	if result.Word != "happy" {
+		t.Errorf("RandomWord(adjective) = %q, want happy", result.Word)
 	}
 
 	// With length filters
-	word, err = d.RandomWord("en", Options{MinLength: 4, MaxLength: 5})
+	result, err = d.RandomWord("en", Options{MinLength: 4, MaxLength: 5})
 	if err != nil {
 		t.Fatalf("RandomWord with length: %v", err)
 	}
-	if len(word) < 4 || len(word) > 5 {
-		t.Errorf("RandomWord length %d not in [4,5]", len(word))
+	if len(result.Word) < 4 || len(result.Word) > 5 {
+		t.Errorf("RandomWord length %d not in [4,5]", len(result.Word))
 	}
 
 	// No match

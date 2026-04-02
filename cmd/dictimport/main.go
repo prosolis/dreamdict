@@ -25,7 +25,13 @@ func main() {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	db, err := sql.Open("sqlite", *dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	db, err := sql.Open("sqlite", *dbPath+
+		"?_pragma=journal_mode(wal)"+
+		"&_pragma=foreign_keys(on)"+
+		"&_pragma=synchronous(off)"+
+		"&_pragma=cache_size(-64000)"+
+		"&_pragma=mmap_size(268435456)"+
+		"&_pragma=temp_store(memory)")
 	if err != nil {
 		slog.Error("open db", "error", err)
 		os.Exit(1)
@@ -35,7 +41,7 @@ func main() {
 
 	if *clean {
 		slog.Info("dropping all tables")
-		for _, table := range []string{"translations", "synonyms", "definitions", "words", "meta"} {
+		for _, table := range []string{"etymology", "pronunciations", "word_synsets", "synsets", "antonyms", "translations", "synonyms", "definitions", "words", "meta"} {
 			if _, err := db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
 				slog.Error("drop table", "table", table, "error", err)
 				os.Exit(1)
@@ -65,7 +71,10 @@ func main() {
 	if langSet["en"] {
 		loaders = append(loaders,
 			loader.SCOWLLoader{},
+			loader.EnglishAffixLoader{},
 			loader.WordNetLoader{},
+			loader.SubtlexLoader{},
+			loader.CMUDictLoader{},
 			loader.WiktionaryLoader{Lang: "en", FileName: "kaikki-en.jsonl"},
 		)
 	}
@@ -73,6 +82,7 @@ func main() {
 	if langSet["fr"] {
 		loaders = append(loaders,
 			loader.HunspellLoader{Lang: "fr", FileName: "fr_FR/fr.dic"},
+			loader.AffixLoader{Lang: "fr", DicFile: "fr_FR/fr.dic", AffFile: "fr_FR/fr.aff"},
 			loader.LexiqueLoader{},
 			loader.WOLFLoader{},
 			loader.WiktionaryLoader{Lang: "fr", FileName: "kaikki-fr.jsonl"},
@@ -82,7 +92,10 @@ func main() {
 	if langSet["pt-PT"] {
 		loaders = append(loaders,
 			loader.HunspellLoader{Lang: "pt-PT", FileName: "pt_PT/pt_PT.dic"},
+			loader.AffixLoader{Lang: "pt-PT", DicFile: "pt_PT/pt_PT.dic", AffFile: "pt_PT/pt_PT.aff"},
 			loader.DicionarioLoader{},
+			loader.CETEMPublicoLoader{},
+			loader.OMWLoader{},
 			loader.WiktionaryLoader{Lang: "pt-PT", FileName: "kaikki-pt.jsonl"},
 		)
 	}
@@ -94,6 +107,9 @@ func main() {
 		)
 	}
 
+	// Difficulty scorer runs last, after all word data is loaded
+	loaders = append(loaders, loader.DifficultyScorer{})
+
 	start := time.Now()
 	if err := loader.Run(db, *dataDir, loaders, skipSet); err != nil {
 		slog.Error("import failed", "error", err)
@@ -104,7 +120,7 @@ func main() {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, kv := range [][2]string{
 		{"imported_at", now},
-		{"schema_version", "1"},
+		{"schema_version", "2"},
 	} {
 		if _, err := db.Exec(
 			"INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", kv[0], kv[1],

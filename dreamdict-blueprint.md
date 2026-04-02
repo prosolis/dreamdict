@@ -761,3 +761,352 @@ then, not now. The service architecture requires no changes at that point.
 
 The consumers are on localhost, there is no intermediary cache, and SQLite responses are
 already faster than any cache lookup. Drop this entirely.
+
+---
+
+## Phase 2
+
+Implement after initial launch is stable and data quality has been validated across all
+three languages. Each item below is scoped and sequenced independently -- they do not
+depend on each other unless noted.
+
+---
+
+### P2-1: Hunspell Affix Expansion
+
+See "Phase 2: Affix Expansion" section above. Implement first among Phase 2 items as it
+fixes a real correctness bug for player-submitted word validation.
+
+---
+
+### P2-2: WordNet Synset Cross-Language Backing
+
+**The problem with the current translation approach:**
+The current `translations` table is populated opportunistically from Wiktionary tags, which
+are inconsistently applied. Coverage is good for common words and thin everywhere else.
+This is a structural ceiling, not a data quality problem that more sources can fix.
+
+**The intentional approach:**
+Princeton WordNet assigns every concept a stable synset ID. WOLF maps French words to
+those same synset IDs. The Open Multilingual Wordnet (OMW) does the same for Portuguese.
+Two words in different languages that share a synset ID are semantic equivalents with high
+confidence -- two independent projects made that mapping independently. DreamDict currently
+discards synset IDs during import. Preserving them unlocks proper cross-language backing.
+
+**Schema additions:**
+
+```sql
+CREATE TABLE IF NOT EXISTS synsets (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    synset_id TEXT NOT NULL UNIQUE,  -- Princeton WN ID e.g. '00914031-a'
+    pos       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS word_synsets (
+    word_id   INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    synset_id INTEGER NOT NULL REFERENCES synsets(id) ON DELETE CASCADE,
+    source    TEXT NOT NULL,         -- 'wordnet', 'wolf', 'omw'
+    PRIMARY KEY (word_id, synset_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_word_synsets_word_id   ON word_synsets(word_id);
+CREATE INDEX IF NOT EXISTS idx_word_synsets_synset_id ON word_synsets(synset_id);
+```
+
+**Loader changes:**
+- `wordnet.go` -- store the synset offset as `synset_id` in `synsets`, link words via
+  `word_synsets` with `source='wordnet'`
+- `wolf.go` -- WOLF synset IDs are Princeton WN IDs; store and link with `source='wolf'`
+- New loader `omw.go` -- Open Multilingual Wordnet Portuguese data; maps pt words to
+  Princeton synset IDs; link with `source='omw'`
+  - Source: https://github.com/omwn/omw-data
+  - File: Portuguese tab file from the OMW release
+
+**New API method:**
+
+```go
+// EnglishBacking returns English words and their WordNet definitions that share
+// a synset with the given word. Semantic equivalence, not translation guesswork.
+func (d *Dictionary) EnglishBacking(word, lang string) ([]EnglishEquivalent, error)
+
+type EnglishEquivalent struct {
+    Word       string
+    Definition string  // the WordNet gloss for that synset
+    Synset     string
+}
+```
+
+**New endpoint:**
+
+```
+GET /backing?word=éphémère&lang=fr
+→ {
+    "word": "éphémère",
+    "lang": "fr",
+    "equivalents": [
+      {"word": "ephemeral", "definition": "lasting a very short time", "synset": "00914031-a"}
+    ]
+  }
+```
+
+**Fallback behaviour:**
+Words with no synset mapping (proper nouns, invented words, very obscure entries) fall back
+to the existing `translations` table as a secondary source. The two mechanisms complement
+each other -- synsets for authoritative coverage, Wiktionary translations for the rest.
+
+**GogoBee impact:**
+Every French and Portuguese word with a WOLF or OMW synset mapping automatically gets
+authoritative English backing with a real WordNet definition attached -- not just a word,
+but the concept it represents. Update `DreamDictClient` with a `EnglishBacking()` method.
+
+---
+
+### P2-3: Antonyms
+
+**Data source:** Already in Princeton WordNet. The pointer data in `data.*` files includes
+antonym relations marked with `!` as the pointer symbol. The current `wordnet.go` loader
+skips all pointer types. This is a loader change only.
+
+**Schema addition:**
+
+```sql
+CREATE TABLE IF NOT EXISTS antonyms (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id  INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    antonym  TEXT    NOT NULL,
+    source   TEXT    NOT NULL,   -- 'wordnet', 'wiktionary'
+    UNIQUE(word_id, antonym)
+);
+
+CREATE INDEX IF NOT EXISTS idx_antonyms_word_id ON antonyms(word_id);
+```
+
+**Loader changes:**
+- `wordnet.go` -- parse pointer lines with symbol `!`; for each antonym pointer, insert
+  into `antonyms` with `source='wordnet'`
+- `wiktionary.go` -- kaikki.org entries carry an `antonyms[]` array alongside `synonyms[]`;
+  parse and insert with `source='wiktionary'`
+
+**New API method and endpoint:**
+
+```go
+func (d *Dictionary) Antonyms(word, lang string) ([]string, error)
+```
+
+```
+GET /antonyms?word=happy&lang=en
+→ {"word": "happy", "lang": "en", "antonyms": ["unhappy", "sad", "miserable"]}
+```
+
+**GogoBee uses:** Opposite-word puzzle modes, richer `!define` output, future word game
+mechanics that need semantic opposites.
+
+---
+
+### P2-4: Frequency Weighting for English and Portuguese
+
+**The problem:** `RandomWord()` for English and Portuguese is currently unweighted --
+`ORDER BY RANDOM()` across the full word table. A Hangman puzzle is as likely to return
+"aardvark" as "house." French already has frequency data from Lexique. English and
+Portuguese need the same.
+
+**Data sources:**
+
+- **English:** SUBTLEX-US (Brysbaert & New, 2009) -- subtitle frequency corpus, freely
+  available. Provides word frequency per million from film/TV subtitles. Same format as
+  Lexique conceptually.
+  - URL: http://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus
+  - File: `SUBTLEX-US.xlsx` (export to TSV before import)
+
+- **Portuguese:** SUBTLEX-PT exists but coverage skews pt-BR. Better option for pt-PT is
+  the frequency list derived from the CETEMPúblico corpus (European Portuguese newspaper
+  corpus), available via Linguateca.
+  - URL: https://www.linguateca.pt/acesso/corpus.php?corpus=CETEMPUBLICO
+  - Alternative: use Wiktionary frequency tags as a rough proxy if CETEMPúblico access
+    is cumbersome -- lower quality but available immediately.
+
+**Loader changes:**
+- New `subtlex.go` -- TSV import for English frequency, same pattern as `lexique.go`;
+  `UPDATE words SET frequency=? WHERE word=? AND lang='en' AND frequency=0`
+- New `cetempublico.go` (or `wiktfreq.go` as fallback) -- same pattern for pt-PT
+
+**Schema:** No change -- `frequency` column already exists on `words` for all languages.
+
+**API change:** `MinFrequency` in `Options` already exists. No API change needed -- this
+just makes the filter meaningful for `en` and `pt-PT` for the first time.
+
+**DreamDict dictimport change:** Add both loaders to the English and pt-PT execution order,
+running after word list population.
+
+---
+
+## Phase 3
+
+Implement after Phase 2 is complete and stable. These are higher-effort or lower-urgency
+than Phase 2 items but all have clear value.
+
+---
+
+### P3-1: Word Difficulty Scoring
+
+**What it is:** A composite difficulty score derived from data already in the database --
+no new sources required. Computed at import time and stored as a column.
+
+**Formula (tune after testing):**
+```
+difficulty = normalize(1 / frequency) * 0.5
+           + normalize(length) * 0.3
+           + normalize(syllable_count) * 0.2
+```
+
+Syllable count can be approximated from the word string (vowel cluster counting) or pulled
+from CMU Pronouncing Dictionary (see P3-2) once that data exists.
+
+**Schema addition:**
+
+```sql
+ALTER TABLE words ADD COLUMN difficulty REAL DEFAULT NULL;
+-- NULL = not yet scored; 0.0 = easiest; 1.0 = hardest
+```
+
+**API change:**
+
+Add to `Options`:
+```go
+MaxDifficulty float64  // 0.0–1.0; 0 = no filter
+MinDifficulty float64
+```
+
+Add to `RandomWord()` response (exposed via new `WordDetail` return type if needed) and
+as a metadata field on `/random` response:
+```json
+{"word": "ephemeral", "difficulty": 0.74}
+```
+
+**GogoBee uses:** Tiered Hangman difficulty without hardcoded word lists. "Easy", "Medium",
+"Hard" modes map to difficulty ranges. Arena word puzzles can scale to player level.
+
+---
+
+### P3-2: Pronunciation Data
+
+**Data source:** CMU Pronouncing Dictionary (CMUdict)
+- URL: http://www.speech.cs.cmu.edu/cgi-bin/cmudict
+- Format: plain text, one entry per line: `EPHEMERAL  IH0 F EH1 M ER0 AH0 L`
+- Coverage: English only (~134,000 entries)
+- License: BSD-style, freely usable
+
+For French and Portuguese, IPA data is available in the kaikki.org Wiktionary dumps under
+a `sounds` array per entry -- the current wiktionary loader ignores this field.
+
+**Schema addition:**
+
+```sql
+CREATE TABLE IF NOT EXISTS pronunciations (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id  INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    format   TEXT NOT NULL,   -- 'cmu', 'ipa'
+    value    TEXT NOT NULL,
+    source   TEXT NOT NULL,   -- 'cmudict', 'wiktionary'
+    UNIQUE(word_id, format, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pronunciations_word_id ON pronunciations(word_id);
+```
+
+**Loader changes:**
+- New `cmudict.go` -- plain text import; match words to existing `words` table entries;
+  insert with `format='cmu'`, `source='cmudict'`
+- `wiktionary.go` -- extend to parse `sounds[].ipa` field; insert with `format='ipa'`,
+  `source='wiktionary'`
+
+**New API method and endpoint:**
+
+```go
+func (d *Dictionary) Pronunciation(word, lang string) ([]Pronunciation, error)
+
+type Pronunciation struct {
+    Format string  // 'cmu', 'ipa'
+    Value  string
+    Source string
+}
+```
+
+```
+GET /pronunciation?word=ephemeral&lang=en
+→ {
+    "word": "ephemeral",
+    "lang": "en",
+    "pronunciations": [
+      {"format": "cmu", "value": "IH0 F EH1 M ER0 AH0 L", "source": "cmudict"},
+      {"format": "ipa", "value": "ɪˈfɛm.ər.əl", "source": "wiktionary"}
+    ]
+  }
+```
+
+**GogoBee uses:** `!define` output enrichment, syllable count for difficulty scoring (P3-1),
+future rhyme game mechanics (words sharing a CMU tail sequence are rhymes).
+
+---
+
+### P3-3: Etymology
+
+**Data source:** kaikki.org Wiktionary dumps already downloaded -- etymology data is in the
+`etymology_text` field per entry. The current `wiktionary.go` loader ignores it.
+
+**Schema addition:**
+
+```sql
+CREATE TABLE IF NOT EXISTS etymology (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id    INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,   -- free-form etymology string from Wiktionary
+    source     TEXT NOT NULL,   -- 'wiktionary'
+    UNIQUE(word_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_etymology_word_id ON etymology(word_id);
+```
+
+**Loader change:**
+- `wiktionary.go` -- extend to parse `etymology_text` field; insert into `etymology` if
+  non-empty and not a redirect/stub string (skip entries that are just "See X" or empty
+  after trimming)
+
+**New API method and endpoint:**
+
+```go
+func (d *Dictionary) Etymology(word, lang string) (string, error)
+```
+
+```
+GET /etymology?word=ephemeral&lang=en
+→ {
+    "word": "ephemeral",
+    "lang": "en",
+    "etymology": "From Medieval Latin ephemerus, from Ancient Greek ἐφήμερος (ephḗmeros, \"lasting only a day\"), from ἐπί (epí, \"on\") + ἡμέρα (hēméra, \"day\")."
+  }
+```
+
+**GogoBee uses:** `!etymology` command for the community. Particularly relevant given the
+pt-PT context -- shared Latin/Greek roots between Portuguese, French, and English make
+etymology a genuine learning tool, not just trivia. Word of the Day can optionally append
+a one-line etymology note.
+
+**Quality note:** Wiktionary etymology text is free-form and inconsistently structured.
+Surface it as-is rather than attempting to parse it into structured fields. A raw string
+is useful; a badly parsed structured field is not.
+
+---
+
+## Roadmap Summary
+
+| Phase | Item | Effort | Payoff |
+|---|---|---|---|
+| 2 | Affix expansion | Medium | High -- fixes real validation bug |
+| 2 | Synset cross-language backing | Medium | High -- authoritative multilingual semantics |
+| 2 | Antonyms | Low | Medium -- already in WordNet data |
+| 2 | Frequency for en + pt-PT | Low-Medium | High -- better random word quality |
+| 3 | Difficulty scoring | Low | High -- derived, no new data |
+| 3 | Pronunciation | Medium | Medium -- en only initially |
+| 3 | Etymology | Low | High -- data already downloaded |

@@ -22,10 +22,12 @@ func ValidLang(lang string) bool {
 }
 
 type Options struct {
-	MinLength    int
-	MaxLength    int
-	POS          string // "", "noun", "verb", "adjective", "adverb"
-	MinFrequency int    // 0 = no filter
+	MinLength     int
+	MaxLength     int
+	POS           string  // "", "noun", "verb", "adjective", "adverb"
+	MinFrequency  int     // 0 = no filter
+	MinDifficulty float64 // 0.0 = no filter
+	MaxDifficulty float64 // 0.0 = no filter
 }
 
 type Definition struct {
@@ -33,6 +35,18 @@ type Definition struct {
 	Gloss    string `json:"gloss"`
 	Source   string `json:"source"`
 	Priority int    `json:"priority"`
+}
+
+type EnglishEquivalent struct {
+	Word       string `json:"word"`
+	Definition string `json:"definition"`
+	Synset     string `json:"synset"`
+}
+
+type Pronunciation struct {
+	Format string `json:"format"`
+	Value  string `json:"value"`
+	Source string `json:"source"`
 }
 
 type Dictionary struct {
