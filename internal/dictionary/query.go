@@ -379,6 +379,82 @@ func (d *Dictionary) Etymology(word, lang string) (string, error) {
 	return text, nil
 }
 
+// Difficulty returns the difficulty score for a word in a language.
+// Returns -1 if the word is not found.
+func (d *Dictionary) Difficulty(word, lang string) (float64, error) {
+	var diff sql.NullFloat64
+	err := d.db.QueryRow(
+		"SELECT difficulty FROM words WHERE word = ? AND lang = ?",
+		strings.ToLower(word), lang,
+	).Scan(&diff)
+	if err == sql.ErrNoRows {
+		return -1, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("dictionary: difficulty: %w", err)
+	}
+	if !diff.Valid {
+		return -1, nil
+	}
+	return diff.Float64, nil
+}
+
+// Rhymes returns words that rhyme with the given word by matching CMU phoneme tails.
+// English only. Returns up to `limit` results sorted by frequency descending.
+func (d *Dictionary) Rhymes(word string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	// Get the CMU tail for the input word.
+	var tail sql.NullString
+	err := d.db.QueryRow(`
+		SELECT p.cmu_tail
+		FROM pronunciations p
+		JOIN words w ON w.id = p.word_id
+		WHERE w.word = ? AND w.lang = 'en' AND p.format = 'cmu' AND p.cmu_tail IS NOT NULL
+		LIMIT 1`,
+		strings.ToLower(word),
+	).Scan(&tail)
+	if err == sql.ErrNoRows || !tail.Valid || tail.String == "" {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: rhymes: %w", err)
+	}
+
+	// Find other words with the same tail.
+	rows, err := d.db.Query(`
+		SELECT DISTINCT w.word
+		FROM pronunciations p
+		JOIN words w ON w.id = p.word_id
+		WHERE p.cmu_tail = ? AND p.format = 'cmu' AND w.lang = 'en' AND w.word != ?
+		ORDER BY w.frequency DESC
+		LIMIT ?`,
+		tail.String, strings.ToLower(word), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: rhymes: %w", err)
+	}
+	defer rows.Close()
+
+	var rhymes []string
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			return nil, fmt.Errorf("dictionary: rhymes scan: %w", err)
+		}
+		rhymes = append(rhymes, r)
+	}
+	if rhymes == nil {
+		rhymes = []string{}
+	}
+	return rhymes, rows.Err()
+}
+
 func (d *Dictionary) DefCount() (map[string]int, error) {
 	rows, err := d.db.Query(`
 		SELECT w.lang, COUNT(*)

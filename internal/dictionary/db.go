@@ -157,6 +157,7 @@ func BootstrapSchema(db *sql.DB) error {
 	// when we catch the "duplicate column" error.
 	migrations := []string{
 		"ALTER TABLE words ADD COLUMN difficulty REAL DEFAULT NULL",
+		"ALTER TABLE pronunciations ADD COLUMN cmu_tail TEXT",
 	}
 	for _, m := range migrations {
 		if _, err := db.Exec(m); err != nil {
@@ -170,6 +171,109 @@ func BootstrapSchema(db *sql.DB) error {
 	return nil
 }
 
+// Migrate opens the database read-write, applies any pending schema migrations,
+// and populates derived data (e.g. CMU rhyme tails). Returns the number of
+// CMU tails populated (0 if already up to date).
+func Migrate(dbPath string) (int, error) {
+	db, err := openDB(dbPath)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	if err := BootstrapSchema(db); err != nil {
+		return 0, err
+	}
+
+	return PopulateCMUTails(db)
+}
+
 func isDuplicateColumn(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "duplicate column")
+}
+
+// PopulateCMUTails computes the rhyme tail for all CMU pronunciation entries
+// that don't already have one. The tail is the phoneme sequence from the last
+// stressed vowel onward (e.g. "K AE1 T" → "AE1 T").
+func PopulateCMUTails(db *sql.DB) (int, error) {
+	// Create index if it doesn't exist.
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_pronunciations_cmu_tail ON pronunciations(cmu_tail)")
+
+	rows, err := db.Query(
+		`SELECT id, value FROM pronunciations WHERE format = 'cmu' AND (cmu_tail IS NULL OR cmu_tail = '')`)
+	if err != nil {
+		return 0, fmt.Errorf("dictionary: populate cmu tails: %w", err)
+	}
+
+	type entry struct {
+		id    int
+		value string
+	}
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.id, &e.value); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("dictionary: populate cmu tails scan: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	rows.Close()
+
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("dictionary: populate cmu tails begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("UPDATE pronunciations SET cmu_tail = ? WHERE id = ?")
+	if err != nil {
+		return 0, fmt.Errorf("dictionary: populate cmu tails prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	count := 0
+	for _, e := range entries {
+		tail := cmuTail(e.value)
+		if tail == "" {
+			continue
+		}
+		if _, err := stmt.Exec(tail, e.id); err != nil {
+			return 0, fmt.Errorf("dictionary: populate cmu tails update: %w", err)
+		}
+		count++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("dictionary: populate cmu tails commit: %w", err)
+	}
+	return count, nil
+}
+
+// cmuTail extracts the phoneme sequence from the last stressed vowel onward.
+// e.g. "K AE1 T" → "AE1 T", "IH0 F EH1 M ER0 AH0 L" → "EH1 M ER0 AH0 L"
+func cmuTail(phonemes string) string {
+	parts := strings.Fields(phonemes)
+	lastStressed := -1
+	for i, p := range parts {
+		if len(p) >= 2 && p[len(p)-1] == '1' {
+			lastStressed = i
+		}
+	}
+	// Fall back to last vowel with any stress marker.
+	if lastStressed == -1 {
+		for i, p := range parts {
+			if len(p) >= 2 && (p[len(p)-1] == '0' || p[len(p)-1] == '2') {
+				lastStressed = i
+			}
+		}
+	}
+	if lastStressed == -1 {
+		return ""
+	}
+	return strings.Join(parts[lastStressed:], " ")
 }

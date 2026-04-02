@@ -64,6 +64,15 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
+	// Run one-time migrations (e.g. populate cmu_tail for rhyme support)
+	// before opening the database read-only.
+	if n, err := dictionary.Migrate(*dbPath); err != nil {
+		slog.Error("migration failed", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("migration complete", "cmu_tails_populated", n)
+	}
+
 	dict, err := dictionary.NewReadOnly(*dbPath)
 	if err != nil {
 		slog.Error("failed to open dictionary", "error", err)
@@ -87,6 +96,8 @@ func main() {
 	mux.HandleFunc("GET /frequency/batch", handleFrequencyBatch(dict))
 	mux.HandleFunc("GET /pronunciation", handlePronunciation(dict))
 	mux.HandleFunc("GET /etymology", handleEtymology(dict))
+	mux.HandleFunc("GET /difficulty", handleDifficulty(dict))
+	mux.HandleFunc("GET /rhyme", handleRhyme(dict))
 	mux.HandleFunc("GET /health", handleHealth(dict, *dbPath))
 
 	serverStart = time.Now()
@@ -503,6 +514,60 @@ func handleEtymology(dict *dictionary.Dictionary) http.HandlerFunc {
 			"word":      word,
 			"lang":      lang,
 			"etymology": etym,
+		})
+	}
+}
+
+func handleDifficulty(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		lang := r.URL.Query().Get("lang")
+		if word == "" || lang == "" {
+			writeError(w, 400, "bad_request", "word and lang are required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		diff, err := dict.Difficulty(word, lang)
+		if err != nil {
+			slog.Error("difficulty", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"word":       word,
+			"lang":       lang,
+			"difficulty": diff,
+		})
+	}
+}
+
+func handleRhyme(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		if word == "" {
+			writeError(w, 400, "bad_request", "word is required")
+			return
+		}
+		limit := 10
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				limit = n
+			}
+		}
+
+		rhymes, err := dict.Rhymes(word, limit)
+		if err != nil {
+			slog.Error("rhyme", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"word":   word,
+			"rhymes": rhymes,
 		})
 	}
 }
