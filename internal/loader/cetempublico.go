@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -74,14 +75,17 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 
 	scanner := bufio.NewScanner(strings.NewReader(string(rawBytes)))
 
-	// Peek first line to detect header vs data
+	// Peek first line to detect header vs data.
+	// A data line has at least one numeric field (either "word count" or "count word").
 	var firstLine string
 	if scanner.Scan() {
 		firstLine = scanner.Text()
 		fields := strings.Fields(firstLine)
 		if len(fields) >= 2 {
-			if _, err := strconv.ParseFloat(strings.TrimSpace(fields[len(fields)-1]), 64); err != nil {
-				firstLine = "" // It's a header, skip it
+			_, errFirst := strconv.ParseFloat(strings.TrimSpace(fields[0]), 64)
+			_, errLast := strconv.ParseFloat(strings.TrimSpace(fields[len(fields)-1]), 64)
+			if errFirst != nil && errLast != nil {
+				firstLine = "" // Neither field is numeric — it's a header, skip it
 			}
 		}
 	}
@@ -109,7 +113,7 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 			freqStr = strings.TrimSpace(fields[1])
 		}
 
-		if word == "" || containsDigit(word) || containsSpace(word) || containsNonLatin(word) {
+		if word == "" || !hasLetter(word) || containsDigit(word) || containsSpace(word) || containsNonLatin(word) {
 			return nil
 		}
 
@@ -173,6 +177,15 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 	}
 	slog.Info("cetempublico loaded", "updated_words", count, "inserted_new", inserted)
 	return nil
+}
+
+func hasLetter(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // latin1ToUTF8 converts ISO-8859-1 bytes to a UTF-8 string.

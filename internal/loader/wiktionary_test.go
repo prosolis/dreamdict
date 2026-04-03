@@ -166,6 +166,66 @@ func TestHasTag(t *testing.T) {
 	}
 }
 
+func TestSenseLevelSynonyms(t *testing.T) {
+	db := setupWiktTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec("INSERT INTO words (word, lang) VALUES ('happy', 'en')"); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	// Synonyms nested inside senses, not top-level
+	jsonl := `{"word":"happy","pos":"adj","lang_code":"en","senses":[{"glosses":["feeling joy"],"tags":[],"synonyms":[{"word":"joyful"},{"word":"glad"}],"antonyms":[{"word":"sad"}]}],"synonyms":[],"antonyms":[],"translations":[]}` + "\n"
+	path := writeJSONL(t, dir, "test.jsonl", jsonl)
+
+	if err := loadWiktionary(db, path, "en"); err != nil {
+		t.Fatal(err)
+	}
+
+	var synCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM synonyms").Scan(&synCount); err != nil {
+		t.Fatal(err)
+	}
+	if synCount != 2 {
+		t.Errorf("expected 2 sense-level synonyms, got %d", synCount)
+	}
+
+	var antCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM antonyms").Scan(&antCount); err != nil {
+		t.Fatal(err)
+	}
+	if antCount != 1 {
+		t.Errorf("expected 1 sense-level antonym, got %d", antCount)
+	}
+}
+
+func TestTopAndSenseLevelSynonymsMerge(t *testing.T) {
+	db := setupWiktTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec("INSERT INTO words (word, lang) VALUES ('big', 'en')"); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	// Both top-level and sense-level synonyms
+	jsonl := `{"word":"big","pos":"adj","lang_code":"en","senses":[{"glosses":["of great size"],"tags":[],"synonyms":[{"word":"huge"}]}],"synonyms":[{"word":"large"}],"antonyms":[],"translations":[]}` + "\n"
+	path := writeJSONL(t, dir, "test.jsonl", jsonl)
+
+	if err := loadWiktionary(db, path, "en"); err != nil {
+		t.Fatal(err)
+	}
+
+	var synCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM synonyms").Scan(&synCount); err != nil {
+		t.Fatal(err)
+	}
+	if synCount != 2 {
+		t.Errorf("expected 2 synonyms (1 top-level + 1 sense-level), got %d", synCount)
+	}
+}
+
 func TestHasBrazilTag(t *testing.T) {
 	tests := []struct {
 		tags []string
