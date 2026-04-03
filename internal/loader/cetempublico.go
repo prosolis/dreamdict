@@ -40,8 +40,6 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 		slog.Warn("cetempublico: no data file found, skipping", "searched", candidates)
 		return nil
 	}
-	slog.Info("cetempublico: using file", "path", path)
-
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("cetempublico: begin tx: %w", err)
@@ -71,7 +69,6 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 
 	isLatin1 := !utf8.Valid(rawBytes)
 	if isLatin1 {
-		slog.Info("cetempublico: detected ISO-8859-1 encoding, converting")
 		rawBytes = []byte(latin1ToUTF8(rawBytes))
 	}
 
@@ -89,7 +86,7 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 		}
 	}
 
-	var count, skipped, inserted int
+	var count, inserted int
 	processLine := func(line string) error {
 		// Support TSV and space-separated, with either column order:
 		//   "word\tcount", "word count", or "count\tword", "count word"
@@ -113,13 +110,11 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 		}
 
 		if word == "" || containsDigit(word) || containsSpace(word) || containsNonLatin(word) {
-			skipped++
 			return nil
 		}
 
 		freqVal, err := strconv.ParseFloat(freqStr, 64)
 		if err != nil || freqVal <= 0 {
-			skipped++
 			return nil
 		}
 
@@ -153,9 +148,6 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 			inserted++
 			count++
 		}
-		if count+skipped <= 5 {
-			slog.Info("cetempublico: sample", "word", word, "freq", freq, "total", count, "inserted", inserted)
-		}
 		return nil
 	}
 
@@ -179,7 +171,7 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("cetempublico: commit: %w", err)
 	}
-	slog.Info("cetempublico loaded", "updated_words", count, "inserted_new", inserted, "skipped", skipped)
+	slog.Info("cetempublico loaded", "updated_words", count, "inserted_new", inserted)
 	return nil
 }
 

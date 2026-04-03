@@ -158,9 +158,33 @@ $ curl localhost:7777/health
 | `--port` | `DREAMDICT_PORT` | `7777` | Listen port |
 | `--host` | `DREAMDICT_HOST` | `127.0.0.1` | Listen host |
 | `--db` | `DREAMDICT_DB` | `./dict.db` | Path to SQLite database |
+| `--token` | `DREAMDICT_TOKEN` | _(none)_ | Bearer token for API auth |
 | `--log-level` | | `info` | `debug`, `info`, `warn`, `error` |
 
 Flags take precedence over environment variables.
+
+### Authentication
+
+When `--token` or `DREAMDICT_TOKEN` is set, all endpoints except `/health` require a bearer token:
+
+```bash
+# Start with auth enabled
+DREAMDICT_TOKEN=mysecret go run ./cmd/server --db ./dict.db
+
+# Authenticated request
+curl -H 'Authorization: Bearer mysecret' 'localhost:7777/define?word=casa&lang=pt-PT'
+
+# Health is always public (for monitoring)
+curl localhost:7777/health
+```
+
+Requests without a valid token receive a `401` response:
+
+```json
+{"error": "unauthorized", "message": "invalid or missing bearer token"}
+```
+
+When no token is configured, auth is disabled and all endpoints are open.
 
 ## Import CLI
 
@@ -265,6 +289,8 @@ chown -R dreamdict:dreamdict /opt/dreamdict
 cp deploy/dreamdict.service /etc/systemd/system/
 echo 'DREAMDICT_PORT=7777' > /etc/dreamdict/dreamdict.env
 echo 'DREAMDICT_DB=/opt/dreamdict/dict.db' >> /etc/dreamdict/dreamdict.env
+echo 'DREAMDICT_TOKEN=changeme' >> /etc/dreamdict/dreamdict.env
+chmod 600 /etc/dreamdict/dreamdict.env
 systemctl daemon-reload
 systemctl enable --now dreamdict
 ```

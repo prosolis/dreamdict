@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ func main() {
 	port := flag.Int("port", 0, "Listen port (default 7777)")
 	host := flag.String("host", "", "Listen host (default 127.0.0.1)")
 	dbPath := flag.String("db", "", "Path to dict.db")
+	token := flag.String("token", "", "Bearer token for API auth (or DREAMDICT_TOKEN env)")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
 
@@ -49,6 +51,10 @@ func main() {
 		} else {
 			*dbPath = "./dict.db"
 		}
+	}
+
+	if *token == "" {
+		*token = os.Getenv("DREAMDICT_TOKEN")
 	}
 
 	var level slog.Level
@@ -102,9 +108,16 @@ func main() {
 
 	serverStart = time.Now()
 	addr := fmt.Sprintf("%s:%d", *host, *port)
+
+	var handler http.Handler = mux
+	if *token != "" {
+		handler = authMiddleware(*token, mux)
+		slog.Info("bearer token auth enabled")
+	}
+
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      loggingMiddleware(mux),
+		Handler:      loggingMiddleware(handler),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -169,6 +182,22 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			"duration", time.Since(start).Round(time.Microsecond),
 			"remote", r.RemoteAddr,
 		)
+	})
+}
+
+func authMiddleware(token string, next http.Handler) http.Handler {
+	expected := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health endpoint is exempt so monitoring works without credentials
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
+			writeError(w, 401, "unauthorized", "invalid or missing bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
