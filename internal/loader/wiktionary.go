@@ -27,9 +27,15 @@ type wiktEntry struct {
 	Word     string `json:"word"`
 	POS      string `json:"pos"`
 	LangCode string `json:"lang_code"`
-	Senses   []struct {
-		Glosses []string `json:"glosses"`
-		Tags    []string `json:"tags"`
+	Senses []struct {
+		Glosses  []string `json:"glosses"`
+		Tags     []string `json:"tags"`
+		Synonyms []struct {
+			Word string `json:"word"`
+		} `json:"synonyms"`
+		Antonyms []struct {
+			Word string `json:"word"`
+		} `json:"antonyms"`
 	} `json:"senses"`
 	Synonyms []struct {
 		Word string `json:"word"`
@@ -188,7 +194,7 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 
 		pos := wiktPOSMap[entry.POS]
 
-		// Process senses
+		// Process senses (definitions + sense-level synonyms/antonyms)
 		for _, sense := range entry.Senses {
 			if hasTag(sense.Tags, "form-of", "alt-of") {
 				continue
@@ -208,9 +214,33 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 				}
 				defCount++
 			}
+
+			// Sense-level synonyms
+			for _, syn := range sense.Synonyms {
+				synWord := strings.ToLower(syn.Word)
+				if synWord == "" || containsDigit(synWord) || containsSpace(synWord) {
+					continue
+				}
+				if _, err := batch.stmtSyn.Exec(synWord, word, lang); err != nil {
+					return fmt.Errorf("wiktionary: insert syn: %w", err)
+				}
+				synCount++
+			}
+
+			// Sense-level antonyms
+			for _, ant := range sense.Antonyms {
+				antWord := strings.ToLower(ant.Word)
+				if antWord == "" || containsDigit(antWord) || containsSpace(antWord) {
+					continue
+				}
+				if _, err := batch.stmtAnt.Exec(antWord, word, lang); err != nil {
+					return fmt.Errorf("wiktionary: insert ant: %w", err)
+				}
+				antCount++
+			}
 		}
 
-		// Process synonyms
+		// Process top-level synonyms
 		for _, syn := range entry.Synonyms {
 			synWord := strings.ToLower(syn.Word)
 			if synWord == "" || containsDigit(synWord) || containsSpace(synWord) {
@@ -222,7 +252,7 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 			synCount++
 		}
 
-		// Process antonyms
+		// Process top-level antonyms
 		for _, ant := range entry.Antonyms {
 			antWord := strings.ToLower(ant.Word)
 			if antWord == "" || containsDigit(antWord) || containsSpace(antWord) {

@@ -412,17 +412,21 @@ fi
 # pt-PT — CETEMPúblico frequency (or fallback frequency list)
 # ============================================================
 echo "=== Portuguese frequency data ==="
-PT_FREQ_FILE="$DATA_DIR/cetempublico-freq.tsv"
+PT_FREQ_FILE="$DATA_DIR/pt_50k.txt"
 if [[ -f "$PT_FREQ_FILE" && "$FORCE" != "true" ]]; then
-    echo "  [skip] cetempublico-freq.tsv already exists"
-elif [[ -f "$DATA_DIR/pt-freq.tsv" && "$FORCE" != "true" ]]; then
-    echo "  [skip] pt-freq.tsv already exists"
-else
-    echo "  [info] CETEMPúblico frequency data requires manual download from Linguateca."
-    echo "  Visit: https://www.linguateca.pt/acesso/corpus.php?corpus=CETEMPUBLICO"
-    echo "  Generate a word frequency list and save as: $PT_FREQ_FILE"
-    echo "  Format: word<TAB>frequency (one per line)"
-    echo "  The import will proceed without frequency data if this file is absent."
+    if check_min_size "$PT_FREQ_FILE" 100000; then
+        echo "  [skip] pt_50k.txt already exists (size ok)"
+    else
+        echo "  [warn] pt_50k.txt looks truncated, re-downloading"
+        rm -f "$PT_FREQ_FILE"
+    fi
+fi
+if [[ ! -f "$PT_FREQ_FILE" ]]; then
+    # OpenSubtitles-derived frequency list (hermitdave/FrequencyWords)
+    download "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2016/pt/pt_50k.txt" "$PT_FREQ_FILE" 2>/dev/null || {
+        echo "  [warn] Portuguese frequency download failed."
+        echo "  The import will proceed without frequency data."
+    }
 fi
 
 # ============================================================

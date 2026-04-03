@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS translations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_translations_word_id ON translations(word_id);
+CREATE INDEX IF NOT EXISTS idx_translations_reverse ON translations(translation, target_lang);
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,

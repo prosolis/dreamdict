@@ -128,12 +128,25 @@ func (d *Dictionary) Synonyms(word, lang string) ([]string, error) {
 }
 
 func (d *Dictionary) Translate(word, fromLang, toLang string) ([]string, error) {
+	// Forward: find translations stored for this word in fromLang → toLang
+	// Reverse: find words in toLang that have this word as a translation to fromLang
+	// This makes translations bidirectional: if English kaikki has "house" → "casa" (pt-PT),
+	// querying "casa" from pt-PT to en will find "house" via the reverse lookup.
 	rows, err := d.db.Query(`
-		SELECT DISTINCT t.translation
-		FROM translations t
-		JOIN words w ON w.id = t.word_id
-		WHERE w.word = ? AND w.lang = ? AND t.target_lang = ?
-		ORDER BY t.translation`,
+		SELECT DISTINCT result FROM (
+			SELECT t.translation AS result
+			FROM translations t
+			JOIN words w ON w.id = t.word_id
+			WHERE w.word = ? AND w.lang = ? AND t.target_lang = ?
+			UNION
+			SELECT w.word AS result
+			FROM translations t
+			JOIN words w ON w.id = t.word_id
+			WHERE t.translation = ? AND t.target_lang = ? AND w.lang = ?
+		) ORDER BY result`,
+		// Forward:  word=word, lang=fromLang, target_lang=toLang
+		strings.ToLower(word), fromLang, toLang,
+		// Reverse:  translation=word, target_lang=fromLang (stored target matches our source), lang=toLang
 		strings.ToLower(word), fromLang, toLang,
 	)
 	if err != nil {

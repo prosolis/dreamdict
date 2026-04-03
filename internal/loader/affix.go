@@ -205,9 +205,9 @@ func parseDicFile(path string) ([]dicEntry, error) {
 }
 
 // maxFormsPerWord caps the number of inflected forms generated per base word.
-// Portuguese and French .aff files can produce hundreds of cross-product forms
-// per word; most are valid but the combinatorial explosion bloats the DB.
-const maxFormsPerWord = 30
+// Portuguese verbs can have 60+ valid conjugations (gerunds, subjunctives, etc.),
+// so the cap must be generous enough to avoid cutting off common forms.
+const maxFormsPerWord = 80
 
 func expandWord(word, flags string, rules map[string]*affixRuleSet) []string {
 	seen := map[string]bool{word: true} // base form already in DB
