@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -54,12 +53,6 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 	}
 	defer stmtUpdate.Close()
 
-	stmtInsert, err := tx.Prepare(`
-		INSERT OR IGNORE INTO words (word, lang, frequency) VALUES (?, 'pt-PT', ?)`)
-	if err != nil {
-		return fmt.Errorf("cetempublico: prepare insert: %w", err)
-	}
-	defer stmtInsert.Close()
 
 	// Read entire file to detect encoding before parsing.
 	// The file is typically <20 MB so this is fine.
@@ -90,7 +83,7 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 		}
 	}
 
-	var count, inserted int
+	var count int
 	processLine := func(line string) error {
 		// Support TSV and space-separated, with either column order:
 		//   "word\tcount", "word count", or "count\tword", "count word"
@@ -144,13 +137,6 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			count++
-		} else {
-			// Word not in DB yet — insert it with frequency
-			if _, err := stmtInsert.Exec(word, freq); err != nil {
-				return fmt.Errorf("cetempublico: insert: %w", err)
-			}
-			inserted++
-			count++
 		}
 		return nil
 	}
@@ -175,17 +161,8 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("cetempublico: commit: %w", err)
 	}
-	slog.Info("cetempublico loaded", "updated_words", count, "inserted_new", inserted)
+	slog.Info("cetempublico loaded", "updated_words", count)
 	return nil
-}
-
-func hasLetter(s string) bool {
-	for _, r := range s {
-		if unicode.IsLetter(r) {
-			return true
-		}
-	}
-	return false
 }
 
 // latin1ToUTF8 converts ISO-8859-1 bytes to a UTF-8 string.

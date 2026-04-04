@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 type SCOWLLoader struct{}
@@ -143,6 +144,15 @@ func containsSpace(s string) bool {
 func containsNonLatin(s string) bool {
 	for _, r := range s {
 		if r > 0x024F && r != '\'' && r != '-' {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLetter(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) {
 			return true
 		}
 	}

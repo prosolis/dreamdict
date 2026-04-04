@@ -48,7 +48,7 @@ func (a AffixLoader) Load(db *sql.DB, dataDir string) error {
 	seen := make(map[string]struct{})
 	for _, entry := range dicEntries {
 		for _, form := range expandWord(entry.word, entry.flags, rules) {
-			if containsDigit(form) || containsSpace(form) {
+			if !hasLetter(form) || containsDigit(form) || containsSpace(form) {
 				continue
 			}
 			if _, dup := seen[form]; dup {

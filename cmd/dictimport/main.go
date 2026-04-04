@@ -107,8 +107,8 @@ func main() {
 		)
 	}
 
-	// Difficulty scorer runs last, after all word data is loaded
-	loaders = append(loaders, loader.DifficultyScorer{})
+	// Prune ghost words from affix expansion, then score difficulty
+	loaders = append(loaders, loader.PruneOrphanWords{}, loader.DifficultyScorer{})
 
 	start := time.Now()
 	if err := loader.Run(db, *dataDir, loaders, skipSet); err != nil {

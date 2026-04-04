@@ -66,20 +66,30 @@ func TestCETEMPublico_ReversedColumns(t *testing.T) {
 	}
 }
 
-func TestCETEMPublico_InsertsMissingWords(t *testing.T) {
+func TestCETEMPublico_SkipsUnknownWords(t *testing.T) {
 	db := setupWiktTestDB(t)
 	defer db.Close()
 
+	// Seed one word, leave "desconhecido" unknown
+	seedWord(t, db, "que", "pt-PT")
+
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "pt_50k.txt"), []byte("que 5000000\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "pt_50k.txt"), []byte("que 5000000\ndesconhecido 1000\n"), 0644)
 
 	if err := (CETEMPublicoLoader{}).Load(db, dir); err != nil {
 		t.Fatal(err)
 	}
 
-	// "que" was not seeded — loader should have inserted it
+	// "que" was seeded — should get frequency
 	if f := queryFreq(t, db, "que"); f == 0 {
-		t.Error("expected non-zero frequency for auto-inserted word 'que'")
+		t.Error("expected non-zero frequency for known word 'que'")
+	}
+
+	// "desconhecido" was not seeded — should NOT be inserted
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM words WHERE word = 'desconhecido'").Scan(&count)
+	if count != 0 {
+		t.Error("expected unknown word 'desconhecido' to be skipped, not inserted")
 	}
 }
 
@@ -107,6 +117,11 @@ func TestCETEMPublico_FiltersJunk(t *testing.T) {
 	db := setupWiktTestDB(t)
 	defer db.Close()
 
+	// Seed all candidate words — only "boa" should get frequency
+	seedWord(t, db, "boa", "pt-PT")
+	seedWord(t, db, "word1", "pt-PT") // contains digit — filtered
+	// "." and "," are not valid words so we don't seed them
+
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pt_50k.txt"),
 		[]byte("word1 5000\n. 90000\n, 80000\nboa 3000\n"), 0644)
@@ -115,10 +130,11 @@ func TestCETEMPublico_FiltersJunk(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Only "boa" should get frequency — word1 has digit, . and , aren't words
 	var count int
-	db.QueryRow("SELECT COUNT(*) FROM words WHERE lang = 'pt-PT'").Scan(&count)
+	db.QueryRow("SELECT COUNT(*) FROM words WHERE lang = 'pt-PT' AND frequency > 0").Scan(&count)
 	if count != 1 {
-		t.Errorf("expected 1 word (boa only), got %d", count)
+		t.Errorf("expected 1 word with frequency (boa only), got %d", count)
 	}
 }
 

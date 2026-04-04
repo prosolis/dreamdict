@@ -57,7 +57,7 @@ func loadHunspell(db *sql.DB, path, lang string) error {
 		word := strings.SplitN(line, "/", 2)[0]
 		word = strings.ToLower(word)
 
-		if containsDigit(word) || containsSpace(word) || containsNonLatin(word) {
+		if !hasLetter(word) || containsDigit(word) || containsSpace(word) || containsNonLatin(word) {
 			continue
 		}
 
