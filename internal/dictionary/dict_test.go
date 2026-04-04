@@ -335,21 +335,21 @@ func TestWords(t *testing.T) {
 
 	d := NewFromDB(db)
 
-	// All 5-letter English words
+	// All 5-letter English words (6-letter "colour" excluded by length)
 	words, err := d.Words("en", Options{MinLength: 5, MaxLength: 5})
 	if err != nil {
 		t.Fatalf("Words: %v", err)
 	}
-	if len(words) != 6 { // color, crane, happy, house, light, quick
+	if len(words) != 6 { // color(us), crane, happy, house, light, quick
 		t.Errorf("Words returned %d, want 6", len(words))
 	}
 
-	// Filter by frequency
-	words, err = d.Words("en", Options{MinLength: 5, MaxLength: 5, MinFrequency: 500})
+	// Filter by frequency — exclude variant words to test only local additions
+	words, err = d.Words("en", Options{MinLength: 4, MaxLength: 5, MinFrequency: 500})
 	if err != nil {
 		t.Fatalf("Words with freq filter: %v", err)
 	}
-	if len(words) != 3 { // color(800), house(800), light(500)
+	if len(words) != 3 { // color(800/us), house(800), light(500)
 		t.Errorf("Words with freq filter returned %d, want 3", len(words))
 	}
 
@@ -358,8 +358,27 @@ func TestWords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Words with POS filter: %v", err)
 	}
-	if len(words) != 4 { // color, crane, house, light
+	if len(words) != 4 { // color(us), crane, house, light
 		t.Errorf("Words with POS filter returned %d, want 4", len(words))
+	}
+
+	// Combined: variant + frequency + length
+	words, err = d.Words("en", Options{MinLength: 5, MaxLength: 5, MinFrequency: 500, Variant: "us"})
+	if err != nil {
+		t.Fatalf("Words with variant+freq: %v", err)
+	}
+	if len(words) != 1 || words[0] != "color" {
+		t.Errorf("Words(variant=us, freq>=500, len=5) = %v, want [color]", words)
+	}
+
+	// Without variant: common words only (no us/gb)
+	words, err = d.Words("en", Options{MinLength: 5, MaxLength: 5, MinFrequency: 500})
+	if err != nil {
+		t.Fatalf("Words with freq no variant: %v", err)
+	}
+	// color(us), house(common), light(common) — all returned since no variant filter
+	if len(words) != 3 {
+		t.Errorf("Words(freq>=500, no variant) returned %d, want 3", len(words))
 	}
 
 	// No match
