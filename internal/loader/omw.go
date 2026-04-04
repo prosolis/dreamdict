@@ -103,7 +103,7 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 			continue
 		}
 
-		if word == "" || containsDigit(word) || containsSpace(word) {
+		if isJunkWord(word) {
 			continue
 		}
 

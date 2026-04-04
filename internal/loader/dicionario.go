@@ -72,7 +72,7 @@ func (DicionarioLoader) Load(db *sql.DB, dataDir string) error {
 		}
 
 		word := strings.ToLower(strings.TrimSpace(entry.Form.Orth))
-		if word == "" || !hasLetter(word) || containsDigit(word) || containsSpace(word) {
+		if isJunkWord(word) {
 			continue
 		}
 

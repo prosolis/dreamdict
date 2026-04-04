@@ -158,3 +158,8 @@ func hasLetter(s string) bool {
 	}
 	return false
 }
+
+// isJunkWord returns true if the word should be rejected from the dictionary.
+func isJunkWord(word string) bool {
+	return word == "" || !hasLetter(word) || containsDigit(word) || containsSpace(word) || containsNonLatin(word)
+}

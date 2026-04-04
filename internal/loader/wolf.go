@@ -129,7 +129,7 @@ func (WOLFLoader) Load(db *sql.DB, dataDir string) error {
 		var words []string
 		for _, lit := range synset.Literals {
 			w := strings.ToLower(strings.TrimSpace(lit.Value))
-			if w != "" && !containsDigit(w) && !containsSpace(w) {
+			if !isJunkWord(w) {
 				words = append(words, w)
 			}
 		}

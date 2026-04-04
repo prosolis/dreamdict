@@ -80,7 +80,7 @@ func (SubtlexLoader) Load(db *sql.DB, dataDir string) error {
 		}
 
 		word := strings.ToLower(strings.TrimSpace(fields[0]))
-		if word == "" || containsDigit(word) || containsSpace(word) {
+		if isJunkWord(word) {
 			continue
 		}
 

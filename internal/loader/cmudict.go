@@ -89,7 +89,7 @@ func (CMUDictLoader) Load(db *sql.DB, dataDir string) error {
 			continue
 		}
 
-		if containsDigit(word) || containsSpace(word) {
+		if isJunkWord(word) {
 			continue
 		}
 

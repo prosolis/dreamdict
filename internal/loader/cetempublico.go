@@ -106,7 +106,7 @@ func (CETEMPublicoLoader) Load(db *sql.DB, dataDir string) error {
 			freqStr = strings.TrimSpace(fields[1])
 		}
 
-		if word == "" || !hasLetter(word) || containsDigit(word) || containsSpace(word) || containsNonLatin(word) {
+		if isJunkWord(word) {
 			return nil
 		}
 

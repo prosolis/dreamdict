@@ -188,7 +188,7 @@ func loadWiktionary(db *sql.DB, path, lang string) error {
 		}
 
 		word := strings.ToLower(entry.Word)
-		if containsDigit(word) || containsSpace(word) {
+		if isJunkWord(word) {
 			continue
 		}
 

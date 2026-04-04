@@ -48,7 +48,7 @@ func (a AffixLoader) Load(db *sql.DB, dataDir string) error {
 	seen := make(map[string]struct{})
 	for _, entry := range dicEntries {
 		for _, form := range expandWord(entry.word, entry.flags, rules) {
-			if !hasLetter(form) || containsDigit(form) || containsSpace(form) {
+			if isJunkWord(form) {
 				continue
 			}
 			if _, dup := seen[form]; dup {
@@ -194,7 +194,7 @@ func parseDicFile(path string) ([]dicEntry, error) {
 			flags = parts[1]
 		}
 
-		if containsDigit(word) || containsNonLatin(word) {
+		if isJunkWord(word) {
 			continue
 		}
 
