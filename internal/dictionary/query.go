@@ -18,6 +18,22 @@ func (d *Dictionary) IsValidWord(word, lang string) (bool, error) {
 	return exists, nil
 }
 
+// WordVariant returns the regional variant tag for a word ("us", "gb", or "").
+func (d *Dictionary) WordVariant(word, lang string) (string, error) {
+	var variant sql.NullString
+	err := d.db.QueryRow(
+		"SELECT variant FROM words WHERE word = ? AND lang = ?",
+		strings.ToLower(word), lang,
+	).Scan(&variant)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("dictionary: word variant: %w", err)
+	}
+	return variant.String, nil
+}
+
 type RandomResult struct {
 	Word       string   `json:"word"`
 	Difficulty *float64 `json:"difficulty,omitempty"`
@@ -51,6 +67,10 @@ func (d *Dictionary) RandomWord(lang string, opts Options) (RandomResult, error)
 		query += " AND difficulty <= ?"
 		args = append(args, opts.MaxDifficulty)
 	}
+	if opts.Variant != "" {
+		query += " AND variant = ?"
+		args = append(args, opts.Variant)
+	}
 
 	query += " ORDER BY RANDOM() LIMIT 1"
 
@@ -67,6 +87,64 @@ func (d *Dictionary) RandomWord(lang string, opts Options) (RandomResult, error)
 		result.Difficulty = &diff.Float64
 	}
 	return result, nil
+}
+
+func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
+	query := "SELECT DISTINCT word FROM words WHERE lang = ?"
+	args := []any{lang}
+
+	if opts.POS != "" {
+		query += " AND pos = ?"
+		args = append(args, opts.POS)
+	}
+	if opts.MinLength > 0 {
+		query += " AND LENGTH(word) >= ?"
+		args = append(args, opts.MinLength)
+	}
+	if opts.MaxLength > 0 {
+		query += " AND LENGTH(word) <= ?"
+		args = append(args, opts.MaxLength)
+	}
+	if opts.MinFrequency > 0 {
+		query += " AND frequency >= ?"
+		args = append(args, opts.MinFrequency)
+	}
+	if opts.MinDifficulty > 0 {
+		query += " AND difficulty >= ?"
+		args = append(args, opts.MinDifficulty)
+	}
+	if opts.MaxDifficulty > 0 {
+		query += " AND difficulty <= ?"
+		args = append(args, opts.MaxDifficulty)
+	}
+	if opts.Variant != "" {
+		query += " AND variant = ?"
+		args = append(args, opts.Variant)
+	}
+
+	query += " ORDER BY word LIMIT 20000"
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: words: %w", err)
+	}
+	defer rows.Close()
+
+	var words []string
+	for rows.Next() {
+		var w string
+		if err := rows.Scan(&w); err != nil {
+			return nil, fmt.Errorf("dictionary: words scan: %w", err)
+		}
+		words = append(words, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("dictionary: words: %w", err)
+	}
+	if len(words) == 0 {
+		return nil, ErrNoMatch
+	}
+	return words, nil
 }
 
 func (d *Dictionary) Define(word, lang string) ([]Definition, error) {
@@ -185,6 +263,15 @@ func (d *Dictionary) WordCount() (map[string]int, error) {
 		counts[lang] = count
 	}
 	return counts, rows.Err()
+}
+
+func (d *Dictionary) TotalWordCount() (int, error) {
+	var count int
+	err := d.db.QueryRow("SELECT COUNT(*) FROM words").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("dictionary: total word count: %w", err)
+	}
+	return count, nil
 }
 
 // Frequency returns the frequency score for a word in a language.

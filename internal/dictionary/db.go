@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS words (
     pos       TEXT,
     frequency  INTEGER DEFAULT 0,
     difficulty REAL DEFAULT NULL,
+    variant    TEXT,
     UNIQUE(word, lang)
 );
 
@@ -159,6 +160,7 @@ func BootstrapSchema(db *sql.DB) error {
 	migrations := []string{
 		"ALTER TABLE words ADD COLUMN difficulty REAL DEFAULT NULL",
 		"ALTER TABLE pronunciations ADD COLUMN cmu_tail TEXT",
+		"ALTER TABLE words ADD COLUMN variant TEXT",
 	}
 	for _, m := range migrations {
 		if _, err := db.Exec(m); err != nil {
@@ -205,6 +207,7 @@ func PopulateCMUTails(db *sql.DB) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("dictionary: populate cmu tails: %w", err)
 	}
+	defer rows.Close()
 
 	type entry struct {
 		id    int
@@ -214,12 +217,13 @@ func PopulateCMUTails(db *sql.DB) (int, error) {
 	for rows.Next() {
 		var e entry
 		if err := rows.Scan(&e.id, &e.value); err != nil {
-			rows.Close()
 			return 0, fmt.Errorf("dictionary: populate cmu tails scan: %w", err)
 		}
 		entries = append(entries, e)
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("dictionary: populate cmu tails iterate: %w", err)
+	}
 
 	if len(entries) == 0 {
 		return 0, nil

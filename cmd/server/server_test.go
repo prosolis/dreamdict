@@ -49,6 +49,7 @@ func setupTestServer(t *testing.T) (*dictionary.Dictionary, *http.ServeMux) {
 	mux.HandleFunc("GET /define", handleDefine(dict))
 	mux.HandleFunc("GET /synonyms", handleSynonyms(dict))
 	mux.HandleFunc("GET /translate", handleTranslate(dict))
+	mux.HandleFunc("GET /words", handleWords(dict))
 	mux.HandleFunc("GET /health", handleHealth(dict, ":memory:"))
 
 	t.Cleanup(func() { db.Close() })
@@ -199,6 +200,55 @@ func TestTranslateEndpoint(t *testing.T) {
 	if len(result.Translations) != 0 {
 		t.Errorf("got %d, want 0", len(result.Translations))
 	}
+}
+
+func TestWordsEndpoint(t *testing.T) {
+	_, mux := setupTestServer(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// All English words
+	resp, _ := http.Get(srv.URL + "/words?lang=en")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var result struct {
+		Lang  string   `json:"lang"`
+		Count int      `json:"count"`
+		Words []string `json:"words"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	resp.Body.Close()
+	if result.Lang != "en" {
+		t.Errorf("lang = %q, want en", result.Lang)
+	}
+	if result.Count != len(result.Words) {
+		t.Errorf("count %d != len(words) %d", result.Count, len(result.Words))
+	}
+	if result.Count != 2 { // happy, cat
+		t.Errorf("count = %d, want 2", result.Count)
+	}
+
+	// With length filter — no match
+	resp, _ = http.Get(srv.URL + "/words?lang=en&min=100")
+	if resp.StatusCode != 404 {
+		t.Errorf("no match: status = %d, want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Missing lang
+	resp, _ = http.Get(srv.URL + "/words")
+	if resp.StatusCode != 400 {
+		t.Errorf("missing lang: status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Bad lang
+	resp, _ = http.Get(srv.URL + "/words?lang=xx")
+	if resp.StatusCode != 400 {
+		t.Errorf("bad lang: status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
 }
 
 func TestHealthEndpoint(t *testing.T) {

@@ -28,6 +28,7 @@ type Options struct {
 	MinFrequency  int     // 0 = no filter
 	MinDifficulty float64 // 0.0 = no filter
 	MaxDifficulty float64 // 0.0 = no filter
+	Variant       string  // "", "us", "gb" — empty means no filter
 }
 
 type Definition struct {

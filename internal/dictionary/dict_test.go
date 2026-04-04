@@ -44,10 +44,13 @@ func seedTestData(t *testing.T, db *sql.DB) {
 	// Definitions
 	mustExec(t, db, "INSERT INTO definitions (word_id, pos, gloss, source, priority) VALUES (1, 'adjective', 'feeling pleasure', 'wordnet', 10)")
 	mustExec(t, db, "INSERT INTO definitions (word_id, pos, gloss, source, priority) VALUES (1, 'adjective', 'feeling joy or contentment', 'wiktionary', 20)")
+	mustExec(t, db, "INSERT INTO definitions (word_id, pos, gloss, source, priority) VALUES (4, 'noun', 'um animal felino', 'dicionario', 10)")
+	mustExec(t, db, "INSERT INTO definitions (word_id, pos, gloss, source, priority) VALUES (4, 'noun', 'um felino doméstico', 'wiktionary', 20)")
 
 	// Synonyms
 	mustExec(t, db, "INSERT INTO synonyms (word_id, synonym, source) VALUES (1, 'glad', 'wordnet')")
 	mustExec(t, db, "INSERT INTO synonyms (word_id, synonym, source) VALUES (1, 'joyful', 'wordnet')")
+	mustExec(t, db, "INSERT INTO synonyms (word_id, synonym, source) VALUES (4, 'bichano', 'wiktionary')")
 
 	// Translations
 	mustExec(t, db, "INSERT INTO translations (word_id, translation, target_lang, source) VALUES (5, 'chat', 'fr', 'wiktionary')")
@@ -69,6 +72,8 @@ func TestIsValidWord(t *testing.T) {
 		{"nonexistent", "en", false},
 		{"chat", "fr", true},
 		{"chat", "en", false},
+		{"gato", "pt-PT", true},
+		{"gato", "en", false},
 	}
 	for _, tt := range tests {
 		got, err := d.IsValidWord(tt.word, tt.lang)
@@ -143,6 +148,18 @@ func TestDefine(t *testing.T) {
 		t.Errorf("second def source = %q, want wiktionary", defs[1].Source)
 	}
 
+	// pt-PT definitions
+	defs, err = d.Define("gato", "pt-PT")
+	if err != nil {
+		t.Fatalf("Define(gato): %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("Define(gato) returned %d defs, want 2", len(defs))
+	}
+	if defs[0].Source != "dicionario" {
+		t.Errorf("first pt-PT def source = %q, want dicionario", defs[0].Source)
+	}
+
 	// No definitions
 	defs, err = d.Define("run", "en")
 	if err != nil {
@@ -165,6 +182,15 @@ func TestSynonyms(t *testing.T) {
 	}
 	if len(syns) != 2 {
 		t.Fatalf("Synonyms returned %d, want 2", len(syns))
+	}
+
+	// pt-PT synonyms
+	syns, err = d.Synonyms("gato", "pt-PT")
+	if err != nil {
+		t.Fatalf("Synonyms(gato): %v", err)
+	}
+	if len(syns) != 1 || syns[0] != "bichano" {
+		t.Errorf("Synonyms(gato) = %v, want [bichano]", syns)
 	}
 
 	// No synonyms
@@ -294,6 +320,124 @@ func TestMeta(t *testing.T) {
 	}
 }
 
+func TestWords(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	// Add some 5-letter words with varying frequency
+	mustExec(t, db, "INSERT INTO words (word, lang, pos, frequency) VALUES ('crane', 'en', 'noun', 200)")
+	mustExec(t, db, "INSERT INTO words (word, lang, pos, frequency) VALUES ('house', 'en', 'noun', 800)")
+	mustExec(t, db, "INSERT INTO words (word, lang, pos, frequency) VALUES ('light', 'en', 'noun', 500)")
+	mustExec(t, db, "INSERT INTO words (word, lang, pos, frequency) VALUES ('quick', 'en', 'adjective', 100)")
+
+	d := NewFromDB(db)
+
+	// All 5-letter English words
+	words, err := d.Words("en", Options{MinLength: 5, MaxLength: 5})
+	if err != nil {
+		t.Fatalf("Words: %v", err)
+	}
+	if len(words) != 5 { // crane, happy, house, light, quick
+		t.Errorf("Words returned %d, want 5", len(words))
+	}
+
+	// Filter by frequency
+	words, err = d.Words("en", Options{MinLength: 5, MaxLength: 5, MinFrequency: 500})
+	if err != nil {
+		t.Fatalf("Words with freq filter: %v", err)
+	}
+	if len(words) != 2 { // house(800), light(500)
+		t.Errorf("Words with freq filter returned %d, want 2", len(words))
+	}
+
+	// Filter by POS
+	words, err = d.Words("en", Options{MinLength: 5, MaxLength: 5, POS: "noun"})
+	if err != nil {
+		t.Fatalf("Words with POS filter: %v", err)
+	}
+	if len(words) != 3 { // crane, house, light
+		t.Errorf("Words with POS filter returned %d, want 3", len(words))
+	}
+
+	// No match
+	_, err = d.Words("en", Options{MinLength: 100})
+	if err != ErrNoMatch {
+		t.Errorf("expected ErrNoMatch, got %v", err)
+	}
+
+	// Results are ordered alphabetically
+	words, err = d.Words("en", Options{MinLength: 5, MaxLength: 5, POS: "noun"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(words); i++ {
+		if words[i] < words[i-1] {
+			t.Errorf("words not sorted: %q before %q", words[i-1], words[i])
+		}
+	}
+}
+
+func TestPopulateCMUTails(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	// Insert CMU pronunciation entries without tails
+	mustExec(t, db, "INSERT INTO pronunciations (word_id, format, value, source) VALUES (5, 'cmu', 'K AE1 T', 'cmudict')")
+	mustExec(t, db, "INSERT INTO pronunciations (word_id, format, value, source) VALUES (1, 'cmu', 'HH AE1 P IY0', 'cmudict')")
+	// IPA entry should be ignored
+	mustExec(t, db, "INSERT INTO pronunciations (word_id, format, value, source) VALUES (2, 'ipa', '/ɹʌn/', 'wiktionary')")
+
+	n, err := PopulateCMUTails(db)
+	if err != nil {
+		t.Fatalf("PopulateCMUTails: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("PopulateCMUTails returned %d, want 2", n)
+	}
+
+	// Verify tails were set correctly
+	var tail string
+	db.QueryRow("SELECT cmu_tail FROM pronunciations WHERE value = 'K AE1 T'").Scan(&tail)
+	if tail != "AE1 T" {
+		t.Errorf("cmu_tail for 'K AE1 T' = %q, want 'AE1 T'", tail)
+	}
+
+	db.QueryRow("SELECT cmu_tail FROM pronunciations WHERE value = 'HH AE1 P IY0'").Scan(&tail)
+	if tail != "AE1 P IY0" {
+		t.Errorf("cmu_tail for 'HH AE1 P IY0' = %q, want 'AE1 P IY0'", tail)
+	}
+
+	// Running again should be a no-op
+	n, err = PopulateCMUTails(db)
+	if err != nil {
+		t.Fatalf("PopulateCMUTails second run: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("PopulateCMUTails second run returned %d, want 0", n)
+	}
+}
+
+func TestCmuTail(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"K AE1 T", "AE1 T"},
+		{"HH AE1 P IY0", "AE1 P IY0"},
+		{"IH0 F EH1 M ER0 AH0 L", "EH1 M ER0 AH0 L"},
+		{"AH0", "AH0"},       // no stressed vowel, falls back to any vowel
+		{"K T S", ""},          // no vowels at all
+	}
+	for _, tt := range tests {
+		got := cmuTail(tt.input)
+		if got != tt.want {
+			t.Errorf("cmuTail(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestWordCount(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -309,5 +453,16 @@ func TestWordCount(t *testing.T) {
 	}
 	if counts["fr"] != 1 {
 		t.Errorf("fr word count = %d, want 1", counts["fr"])
+	}
+	if counts["pt-PT"] != 1 {
+		t.Errorf("pt-PT word count = %d, want 1", counts["pt-PT"])
+	}
+
+	total, err := d.TotalWordCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 {
+		t.Errorf("total word count = %d, want 5", total)
 	}
 }

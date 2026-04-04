@@ -103,8 +103,14 @@ func main() {
 	mux.HandleFunc("GET /pronunciation", handlePronunciation(dict))
 	mux.HandleFunc("GET /etymology", handleEtymology(dict))
 	mux.HandleFunc("GET /difficulty", handleDifficulty(dict))
+	mux.HandleFunc("GET /words", handleWords(dict))
 	mux.HandleFunc("GET /rhyme", handleRhyme(dict))
 	mux.HandleFunc("GET /health", handleHealth(dict, *dbPath))
+
+	// Cache total word count for status line
+	if wc, err := dict.TotalWordCount(); err == nil {
+		totalWords.Store(uint64(wc))
+	}
 
 	serverStart = time.Now()
 	addr := fmt.Sprintf("%s:%d", *host, *port)
@@ -154,6 +160,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 var (
 	queryCount  atomic.Uint64
 	errorCount  atomic.Uint64
+	totalWords  atomic.Uint64
 	serverStart time.Time
 	lastPath    atomic.Value // stores string
 )
@@ -172,8 +179,9 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		rps := float64(n) / time.Since(serverStart).Seconds()
 		errs := errorCount.Load()
 		last, _ := lastPath.Load().(string)
-		fmt.Fprintf(os.Stdout, "\r\033[2KQueries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
-			n, errs, rps, uptime, last)
+		words := totalWords.Load()
+		fmt.Fprintf(os.Stdout, "\r\033[2KWords: %dk | Queries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
+			words/1000, n, errs, rps, uptime, last)
 		slog.Debug("request",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -199,6 +207,39 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func parseOptions(r *http.Request) dictionary.Options {
+	opts := dictionary.Options{
+		POS:     r.URL.Query().Get("pos"),
+		Variant: r.URL.Query().Get("variant"),
+	}
+	if v := r.URL.Query().Get("min"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			opts.MinLength = n
+		}
+	}
+	if v := r.URL.Query().Get("max"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			opts.MaxLength = n
+		}
+	}
+	if v := r.URL.Query().Get("min_freq"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			opts.MinFrequency = n
+		}
+	}
+	if v := r.URL.Query().Get("min_difficulty"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			opts.MinDifficulty = f
+		}
+	}
+	if v := r.URL.Query().Get("max_difficulty"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			opts.MaxDifficulty = f
+		}
+	}
+	return opts
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -246,34 +287,7 @@ func handleRandom(dict *dictionary.Dictionary) http.HandlerFunc {
 			return
 		}
 
-		opts := dictionary.Options{
-			POS: r.URL.Query().Get("pos"),
-		}
-		if v := r.URL.Query().Get("min"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				opts.MinLength = n
-			}
-		}
-		if v := r.URL.Query().Get("max"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				opts.MaxLength = n
-			}
-		}
-		if v := r.URL.Query().Get("min_freq"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				opts.MinFrequency = n
-			}
-		}
-		if v := r.URL.Query().Get("min_difficulty"); v != "" {
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				opts.MinDifficulty = f
-			}
-		}
-		if v := r.URL.Query().Get("max_difficulty"); v != "" {
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				opts.MaxDifficulty = f
-			}
-		}
+		opts := parseOptions(r)
 
 		result, err := dict.RandomWord(lang, opts)
 		if err == dictionary.ErrNoMatch {
@@ -290,6 +304,38 @@ func handleRandom(dict *dictionary.Dictionary) http.HandlerFunc {
 			resp["difficulty"] = *result.Difficulty
 		}
 		writeJSON(w, 200, resp)
+	}
+}
+
+func handleWords(dict *dictionary.Dictionary) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		lang := r.URL.Query().Get("lang")
+		if lang == "" {
+			writeError(w, 400, "bad_request", "lang is required")
+			return
+		}
+		if !dictionary.ValidLang(lang) {
+			writeError(w, 400, "bad_request", "unsupported language: "+lang)
+			return
+		}
+
+		opts := parseOptions(r)
+
+		words, err := dict.Words(lang, opts)
+		if err == dictionary.ErrNoMatch {
+			writeError(w, 404, "no_match", "no words match the given filters")
+			return
+		}
+		if err != nil {
+			slog.Error("words", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"lang":  lang,
+			"count": len(words),
+			"words": words,
+		})
 	}
 }
 
@@ -312,11 +358,17 @@ func handleDefine(dict *dictionary.Dictionary) http.HandlerFunc {
 			writeError(w, 500, "internal", "internal error")
 			return
 		}
-		writeJSON(w, 200, map[string]any{
+		resp := map[string]any{
 			"word":        word,
 			"lang":        lang,
 			"definitions": defs,
-		})
+		}
+		if lang == "en" {
+			if v, err := dict.WordVariant(word, lang); err == nil && v != "" {
+				resp["variant"] = v
+			}
+		}
+		writeJSON(w, 200, resp)
 	}
 }
 

@@ -64,7 +64,7 @@ curl 'localhost:7777/valid?word=running&lang=en'
 
 ### `GET /random`
 
-Return a random word. Optional filters: `pos` (`noun`, `verb`, `adjective`, `adverb`), `min`/`max` (word length), `min_freq` (frequency score), `min_difficulty`/`max_difficulty` (0.0–1.0).
+Return a random word. Optional filters: `pos` (`noun`, `verb`, `adjective`, `adverb`), `min`/`max` (word length), `min_freq` (frequency score), `min_difficulty`/`max_difficulty` (0.0–1.0), `variant` (`us` or `gb`, English only).
 
 ```bash
 curl 'localhost:7777/random?lang=en&pos=noun&min=5&max=8&max_difficulty=0.5'
@@ -73,16 +73,17 @@ curl 'localhost:7777/random?lang=en&pos=noun&min=5&max=8&max_difficulty=0.5'
 
 ### `GET /define`
 
-Return all definitions ordered by source priority. Curated sources (WordNet, WOLF, Dicionário Aberto) appear before Wiktionary supplemental definitions.
+Return all definitions ordered by source priority. Curated sources (WordNet, WOLF, Dicionário Aberto) appear before Wiktionary supplemental definitions. For English words, the response includes a `variant` field (`"us"`, `"gb"`, or omitted for common English) indicating regional spelling.
 
 ```bash
-curl 'localhost:7777/define?word=ephemeral&lang=en'
+curl 'localhost:7777/define?word=ardor&lang=en'
 {
-  "word": "ephemeral",
+  "word": "ardor",
   "lang": "en",
+  "variant": "us",
   "definitions": [
-    {"pos":"adjective","gloss":"lasting for a very short time","source":"wordnet","priority":10},
-    {"pos":"adjective","gloss":"lasting only for a day","source":"wiktionary","priority":20}
+    {"pos":"noun","gloss":"a feeling of strong eagerness","source":"wordnet","priority":10},
+    {"pos":"noun","gloss":"feelings of great warmth and intensity","source":"wordnet","priority":10}
   ]
 }
 ```
@@ -176,6 +177,33 @@ curl 'localhost:7777/frequency/batch?words=house,cat,ephemeral&lang=en'
 {"lang":"en","frequencies":{"cat":800,"ephemeral":50,"house":800}}
 ```
 
+### `GET /difficulty`
+
+Return the difficulty score for a word (0.0 = easiest, 1.0 = hardest).
+
+```bash
+curl 'localhost:7777/difficulty?word=ephemeral&lang=en'
+{"word":"ephemeral","lang":"en","difficulty":0.72}
+```
+
+### `GET /words`
+
+Return a list of words matching filters. Same filter options as `/random` plus `variant`. Returns up to 20,000 results.
+
+```bash
+curl 'localhost:7777/words?lang=en&min=5&max=5&variant=gb&min_freq=500'
+{"lang":"en","count":42,"words":["colour","fibre","honour",...]}
+```
+
+### `GET /rhyme`
+
+Return English rhyming words based on CMU phoneme tail matching. Optional `limit` parameter (default 10).
+
+```bash
+curl 'localhost:7777/rhyme?word=cat&limit=5'
+{"word":"cat","rhymes":["bat","flat","hat","mat","sat"]}
+```
+
 ### `GET /health`
 
 Health check with database statistics. Always unauthenticated — safe for monitoring tools.
@@ -185,9 +213,9 @@ curl localhost:7777/health
 {
   "status": "ok",
   "db_path": "./dict.db",
-  "word_counts": {"en":214832,"fr":82104,"pt-PT":71088,"zh":120000},
-  "def_counts":  {"en":380000,"fr":200000,"pt-PT":120000,"zh":80000},
-  "imported_at": "2026-03-28T14:22:00Z",
+  "word_counts": {"en":136615,"fr":56096,"pt-PT":136300,"zh":120883},
+  "def_counts":  {"en":361640,"fr":137738,"pt-PT":84577,"zh":199929},
+  "imported_at": "2026-04-04T21:31:17Z",
   "schema_version": "2"
 }
 ```
@@ -248,7 +276,7 @@ go run ./cmd/dictimport [flags]
 
 | Loader | Language | What it provides |
 |---|---|---|
-| `scowl` | en | Word list with frequency tiers |
+| `scowl` | en | Word list with frequency tiers and regional variant tagging (us/gb) |
 | `affix-en` | en | Inflected form expansion |
 | `wordnet` | en | Definitions, synonyms, antonyms, synset IDs |
 | `subtlex` | en | SUBTLEX-US subtitle frequency data |
@@ -267,6 +295,7 @@ go run ./cmd/dictimport [flags]
 | `wiktionary-pt` | pt-PT | Supplemental definitions, synonyms, antonyms, translations, IPA, etymology (filtered to European Portuguese entries) |
 | `cedict` | zh | Words, definitions, translations via CC-CEDICT |
 | `wiktionary-zh` | zh | Supplemental Chinese data |
+| `prune-orphans` | all | Removes ghost words with no definitions, frequency, or references |
 | `difficulty` | all | Composite difficulty scoring — runs last |
 
 ---
@@ -276,7 +305,7 @@ go run ./cmd/dictimport [flags]
 | Source | Language | What it provides |
 |---|---|---|
 | [SCOWL](https://wordlist.aspell.net/) | en | Word list + frequency tiers |
-| [WordNet 3.1](https://wordnet.princeton.edu/) | en | Definitions, synonyms, antonyms, synset IDs |
+| [WordNet 3.0](https://wordnet.princeton.edu/) | en | Definitions, synonyms, antonyms, synset IDs |
 | [SUBTLEX-US](http://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus) | en | Subtitle-based word frequency |
 | [CMU Pronouncing Dictionary](http://www.speech.cs.cmu.edu/cgi-bin/cmudict) | en | Phoneme pronunciation |
 | [Hunspell/LibreOffice](https://github.com/LibreOffice/dictionaries) | fr, pt-PT | Word lists + affix rules |
@@ -310,7 +339,7 @@ Schema version 2. Full schema in `internal/dictionary/db.go`.
 
 | Table | Purpose |
 |---|---|
-| `words` | Core word inventory: word, lang, pos, frequency, difficulty |
+| `words` | Core word inventory: word, lang, pos, frequency, difficulty, variant |
 | `definitions` | Definitions with source and priority |
 | `synonyms` | Synonym relationships |
 | `antonyms` | Antonym relationships |
@@ -393,15 +422,15 @@ data/                 Source data files (gitignored)
 
 ## Expected Database Size
 
-| Language | Words | Definitions | Size |
-|---|---|---|---|
-| en | ~220k+ | ~380k | ~180 MB |
-| fr | ~90k+ | ~200k | ~80 MB |
-| pt-PT | ~75k+ | ~120k | ~50 MB |
-| zh | varies | ~80k | ~20 MB |
-| **Total** | | | **~330 MB** |
+| Language | Words | Definitions |
+|---|---|---|
+| en | ~137k | ~362k |
+| fr | ~56k | ~138k |
+| pt-PT | ~136k | ~85k |
+| zh | ~121k | ~200k |
+| **Total** | **~450k** | **~785k** |
 
-Word counts exceed base form counts due to affix expansion of inflected forms.
+English words include ~3,800 US-only and ~3,900 GB-only regional variants. Word counts include inflected forms from affix expansion, with ghost words pruned automatically.
 
 ---
 
