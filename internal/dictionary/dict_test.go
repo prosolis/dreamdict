@@ -40,6 +40,8 @@ func seedTestData(t *testing.T, db *sql.DB) {
 	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (3, 'chat', 'fr', 'noun', 5000)")
 	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (4, 'gato', 'pt-PT', 'noun', 0)")
 	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (5, 'cat', 'en', 'noun', 0)")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency, variant) VALUES (6, 'color', 'en', 'noun', 800, 'us')")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency, variant) VALUES (7, 'colour', 'en', 'noun', 800, 'gb')")
 
 	// Definitions
 	mustExec(t, db, "INSERT INTO definitions (word_id, pos, gloss, source, priority) VALUES (1, 'adjective', 'feeling pleasure', 'wordnet', 10)")
@@ -338,8 +340,8 @@ func TestWords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Words: %v", err)
 	}
-	if len(words) != 5 { // crane, happy, house, light, quick
-		t.Errorf("Words returned %d, want 5", len(words))
+	if len(words) != 6 { // color, crane, happy, house, light, quick
+		t.Errorf("Words returned %d, want 6", len(words))
 	}
 
 	// Filter by frequency
@@ -347,8 +349,8 @@ func TestWords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Words with freq filter: %v", err)
 	}
-	if len(words) != 2 { // house(800), light(500)
-		t.Errorf("Words with freq filter returned %d, want 2", len(words))
+	if len(words) != 3 { // color(800), house(800), light(500)
+		t.Errorf("Words with freq filter returned %d, want 3", len(words))
 	}
 
 	// Filter by POS
@@ -356,8 +358,8 @@ func TestWords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Words with POS filter: %v", err)
 	}
-	if len(words) != 3 { // crane, house, light
-		t.Errorf("Words with POS filter returned %d, want 3", len(words))
+	if len(words) != 4 { // color, crane, house, light
+		t.Errorf("Words with POS filter returned %d, want 4", len(words))
 	}
 
 	// No match
@@ -448,8 +450,8 @@ func TestWordCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts["en"] != 3 {
-		t.Errorf("en word count = %d, want 3", counts["en"])
+	if counts["en"] != 5 {
+		t.Errorf("en word count = %d, want 5", counts["en"])
 	}
 	if counts["fr"] != 1 {
 		t.Errorf("fr word count = %d, want 1", counts["fr"])
@@ -462,7 +464,78 @@ func TestWordCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 5 {
-		t.Errorf("total word count = %d, want 5", total)
+	if total != 7 {
+		t.Errorf("total word count = %d, want 7", total)
+	}
+}
+
+func TestWordVariant(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+	d := NewFromDB(db)
+
+	tests := []struct {
+		word, lang string
+		want       string
+	}{
+		{"color", "en", "us"},
+		{"colour", "en", "gb"},
+		{"cat", "en", ""},       // common English, no variant
+		{"gato", "pt-PT", ""},   // non-English, no variant
+		{"nonexistent", "en", ""},
+	}
+	for _, tt := range tests {
+		got, err := d.WordVariant(tt.word, tt.lang)
+		if err != nil {
+			t.Errorf("WordVariant(%q, %q) error: %v", tt.word, tt.lang, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("WordVariant(%q, %q) = %q, want %q", tt.word, tt.lang, got, tt.want)
+		}
+	}
+}
+
+func TestVariantFilter(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+	d := NewFromDB(db)
+
+	// Filter US-only words
+	result, err := d.RandomWord("en", Options{Variant: "us"})
+	if err != nil {
+		t.Fatalf("RandomWord(variant=us): %v", err)
+	}
+	if result.Word != "color" {
+		t.Errorf("RandomWord(variant=us) = %q, want color", result.Word)
+	}
+
+	// Filter GB-only words
+	result, err = d.RandomWord("en", Options{Variant: "gb"})
+	if err != nil {
+		t.Fatalf("RandomWord(variant=gb): %v", err)
+	}
+	if result.Word != "colour" {
+		t.Errorf("RandomWord(variant=gb) = %q, want colour", result.Word)
+	}
+
+	// Words endpoint with variant filter
+	words, err := d.Words("en", Options{Variant: "us"})
+	if err != nil {
+		t.Fatalf("Words(variant=us): %v", err)
+	}
+	if len(words) != 1 || words[0] != "color" {
+		t.Errorf("Words(variant=us) = %v, want [color]", words)
+	}
+
+	// No variant filter returns all
+	words, err = d.Words("en", Options{})
+	if err != nil {
+		t.Fatalf("Words(no variant): %v", err)
+	}
+	if len(words) != 5 {
+		t.Errorf("Words(no variant) returned %d, want 5", len(words))
 	}
 }
