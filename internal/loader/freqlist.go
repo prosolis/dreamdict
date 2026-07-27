@@ -2,6 +2,7 @@ package loader
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -70,7 +71,7 @@ func (f FrequencyListLoader) Load(db *sql.DB, dataDir string) error {
 		rawBytes = []byte(latin1ToUTF8(rawBytes))
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(string(rawBytes)))
+	scanner := bufio.NewScanner(bytes.NewReader(rawBytes))
 
 	// Peek first line to detect header vs data.
 	// A data line has at least one numeric field (either "word count" or "count word").

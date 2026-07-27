@@ -187,8 +187,8 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		errs := errorCount.Load()
 		last, _ := lastPath.Load().(string)
 		served := wordsServed.Load()
-		fmt.Fprintf(os.Stdout, "\r\033[2KServed: %dk | Queries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
-			served/1000, n, errs, rps, uptime, last)
+		fmt.Fprintf(os.Stdout, "\r\033[2KServed: %d | Queries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
+			served, n, errs, rps, uptime, last)
 		slog.Debug("request",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -329,46 +329,34 @@ func handleWords(dict *dictionary.Dictionary) http.HandlerFunc {
 		opts := parseOptions(r)
 		includeFreq := r.URL.Query().Get("include_freq") == "true"
 
+		entries, err := dict.WordsWithFreqs(lang, opts)
+		if err == dictionary.ErrNoMatch {
+			writeError(w, 404, "no_match", "no words match the given filters")
+			return
+		}
+		if err != nil {
+			slog.Error("words", "error", err)
+			writeError(w, 500, "internal", "internal error")
+			return
+		}
+
+		words := make([]string, len(entries))
+		for i, e := range entries {
+			words[i] = e.Word
+		}
+		resp := map[string]any{
+			"lang":  lang,
+			"count": len(words),
+			"words": words,
+		}
 		if includeFreq {
-			entries, err := dict.WordsWithFreqs(lang, opts)
-			if err == dictionary.ErrNoMatch {
-				writeError(w, 404, "no_match", "no words match the given filters")
-				return
-			}
-			if err != nil {
-				slog.Error("words", "error", err)
-				writeError(w, 500, "internal", "internal error")
-				return
-			}
-			words := make([]string, len(entries))
 			freqs := make([]int, len(entries))
 			for i, e := range entries {
-				words[i] = e.Word
 				freqs[i] = e.Freq
 			}
-			writeJSON(w, 200, map[string]any{
-				"lang":  lang,
-				"count": len(words),
-				"words": words,
-				"freqs": freqs,
-			})
-		} else {
-			words, err := dict.Words(lang, opts)
-			if err == dictionary.ErrNoMatch {
-				writeError(w, 404, "no_match", "no words match the given filters")
-				return
-			}
-			if err != nil {
-				slog.Error("words", "error", err)
-				writeError(w, 500, "internal", "internal error")
-				return
-			}
-			writeJSON(w, 200, map[string]any{
-				"lang":  lang,
-				"count": len(words),
-				"words": words,
-			})
+			resp["freqs"] = freqs
 		}
+		writeJSON(w, 200, resp)
 	}
 }
 

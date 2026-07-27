@@ -195,6 +195,13 @@ curl 'localhost:7777/words?lang=en&min=5&max=5&variant=gb&min_freq=500'
 {"lang":"en","count":42,"words":["colour","fibre","honour",...]}
 ```
 
+Pass `include_freq=true` to get a parallel `freqs` array holding each word's frequency score (0 when the word has none).
+
+```bash
+curl 'localhost:7777/words?lang=es&min=5&max=5&include_freq=true'
+{"lang":"es","count":3,"words":["casas","perro","tarde"],"freqs":[1204,932,4517]}
+```
+
 ### `GET /rhyme`
 
 Return English rhyming words based on CMU phoneme tail matching. Optional `limit` parameter (default 10).

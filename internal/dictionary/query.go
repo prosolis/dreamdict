@@ -89,8 +89,11 @@ func (d *Dictionary) RandomWord(lang string, opts Options) (RandomResult, error)
 	return result, nil
 }
 
-func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
-	query := "SELECT DISTINCT word FROM words WHERE lang = ?"
+// wordListQuery builds a "SELECT <cols> FROM words WHERE ..." statement from
+// the filters in opts. Words and WordsWithFreqs share it so a filter added
+// here applies to both.
+func wordListQuery(cols, lang string, opts Options) (string, []any) {
+	query := "SELECT DISTINCT " + cols + " FROM words WHERE lang = ?"
 	args := []any{lang}
 
 	if opts.POS != "" {
@@ -123,6 +126,11 @@ func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
 	}
 
 	query += " ORDER BY word LIMIT 20000"
+	return query, args
+}
+
+func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
+	query, args := wordListQuery("word", lang, opts)
 
 	rows, err := d.db.Query(query, args...)
 	if err != nil {
@@ -155,39 +163,7 @@ type WordEntry struct {
 
 // WordsWithFreqs returns matching words with their frequency scores.
 func (d *Dictionary) WordsWithFreqs(lang string, opts Options) ([]WordEntry, error) {
-	query := "SELECT DISTINCT word, COALESCE(frequency, 0) FROM words WHERE lang = ?"
-	args := []any{lang}
-
-	if opts.POS != "" {
-		query += " AND pos = ?"
-		args = append(args, opts.POS)
-	}
-	if opts.MinLength > 0 {
-		query += " AND LENGTH(word) >= ?"
-		args = append(args, opts.MinLength)
-	}
-	if opts.MaxLength > 0 {
-		query += " AND LENGTH(word) <= ?"
-		args = append(args, opts.MaxLength)
-	}
-	if opts.MinFrequency > 0 {
-		query += " AND frequency >= ?"
-		args = append(args, opts.MinFrequency)
-	}
-	if opts.MinDifficulty > 0 {
-		query += " AND difficulty >= ?"
-		args = append(args, opts.MinDifficulty)
-	}
-	if opts.MaxDifficulty > 0 {
-		query += " AND difficulty <= ?"
-		args = append(args, opts.MaxDifficulty)
-	}
-	if opts.Variant != "" {
-		query += " AND variant = ?"
-		args = append(args, opts.Variant)
-	}
-
-	query += " ORDER BY word LIMIT 20000"
+	query, args := wordListQuery("word, COALESCE(frequency, 0)", lang, opts)
 
 	rows, err := d.db.Query(query, args...)
 	if err != nil {
