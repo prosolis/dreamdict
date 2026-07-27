@@ -1,6 +1,6 @@
 # DreamDict
 
-A self-hosted, CGO-free HTTP dictionary service supporting English, French, **European Portuguese**, and Mandarin Chinese. Built to replace metered third-party APIs like Wordnik with something you own outright.
+A self-hosted, CGO-free HTTP dictionary service supporting English, French, **European Portuguese**, Spanish, and Mandarin Chinese. Built to replace metered third-party APIs like Wordnik with something you own outright.
 
 No API keys. No rate limits. No external runtime dependencies. Sub-millisecond response times on commodity hardware.
 
@@ -35,10 +35,10 @@ The pt-PT distinction matters and is handled explicitly. Most open NLP resources
 ## Quick Start
 
 ```bash
-# Download all dictionary source data (~2-3 GB)
+# Download all dictionary source data (~3-4 GB)
 ./scripts/download-dict-data.sh
 
-# Build the database (~330 MB, one-time)
+# Build the database (~400 MB, one-time)
 go run ./cmd/dictimport --data ./data --db ./dict.db
 
 # Start the server
@@ -161,7 +161,7 @@ curl 'localhost:7777/etymology?word=ephemeral&lang=en'
 
 ### `GET /frequency`
 
-Return the frequency score for a word. Higher values = more common. Sourced from SUBTLEX-US (en), Lexique (fr), and CETEMPúblico (pt-PT).
+Return the frequency score for a word. Higher values = more common. Sourced from SUBTLEX-US (en), Lexique (fr), CETEMPúblico (pt-PT), and OpenSubtitles frequency lists (es).
 
 ```bash
 curl 'localhost:7777/frequency?word=house&lang=en'
@@ -195,6 +195,13 @@ curl 'localhost:7777/words?lang=en&min=5&max=5&variant=gb&min_freq=500'
 {"lang":"en","count":42,"words":["colour","fibre","honour",...]}
 ```
 
+Pass `include_freq=true` to get a parallel `freqs` array holding each word's frequency score (0 when the word has none).
+
+```bash
+curl 'localhost:7777/words?lang=es&min=5&max=5&include_freq=true'
+{"lang":"es","count":3,"words":["casas","perro","tarde"],"freqs":[1204,932,4517]}
+```
+
 ### `GET /rhyme`
 
 Return English rhyming words based on CMU phoneme tail matching. Optional `limit` parameter (default 10).
@@ -213,8 +220,8 @@ curl localhost:7777/health
 {
   "status": "ok",
   "db_path": "./dict.db",
-  "word_counts": {"en":136615,"fr":56096,"pt-PT":136300,"zh":120883},
-  "def_counts":  {"en":361640,"fr":137738,"pt-PT":84577,"zh":199929},
+  "word_counts": {"en":136615,"fr":56096,"pt-PT":136300,"es":118400,"zh":120883},
+  "def_counts":  {"en":361640,"fr":137738,"pt-PT":84577,"es":151200,"zh":199929},
   "imported_at": "2026-04-04T21:31:17Z",
   "schema_version": "2"
 }
@@ -268,7 +275,7 @@ go run ./cmd/dictimport [flags]
 |---|---|---|
 | `--db` | `./dict.db` | Output database path |
 | `--data` | `./data` | Source data directory |
-| `--langs` | `en,fr,pt-PT,zh` | Languages to import |
+| `--langs` | `en,fr,pt-PT,es,zh` | Languages to import |
 | `--clean` | `false` | Drop and recreate all tables before import |
 | `--skip` | | Comma-separated loader names to skip |
 
@@ -293,6 +300,11 @@ go run ./cmd/dictimport [flags]
 | `cetempublico` | pt-PT | Frequency data from CETEMPúblico corpus |
 | `omw-pt` | pt-PT | Open Multilingual Wordnet synset mappings |
 | `wiktionary-pt` | pt-PT | Supplemental definitions, synonyms, antonyms, translations, IPA, etymology (filtered to European Portuguese entries) |
+| `hunspell-es` | es | Castilian Spanish word list (es_ES) |
+| `affix-es` | es | Inflected form expansion |
+| `es-freq` | es | Frequency data from an OpenSubtitles-derived list |
+| `omw-es` | es | Open Multilingual Wordnet (MCR) synset mappings |
+| `wiktionary-es` | es | Supplemental definitions, synonyms, antonyms, translations, IPA, etymology |
 | `cedict` | zh | Words, definitions, translations via CC-CEDICT |
 | `wiktionary-zh` | zh | Supplemental Chinese data |
 | `prune-orphans` | all | Removes ghost words with no definitions, frequency, or references |
@@ -308,12 +320,13 @@ go run ./cmd/dictimport [flags]
 | [WordNet 3.0](https://wordnet.princeton.edu/) | en | Definitions, synonyms, antonyms, synset IDs |
 | [SUBTLEX-US](http://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus) | en | Subtitle-based word frequency |
 | [CMU Pronouncing Dictionary](http://www.speech.cs.cmu.edu/cgi-bin/cmudict) | en | Phoneme pronunciation |
-| [Hunspell/LibreOffice](https://github.com/LibreOffice/dictionaries) | fr, pt-PT | Word lists + affix rules |
+| [Hunspell/LibreOffice](https://github.com/LibreOffice/dictionaries) | fr, pt-PT, es | Word lists + affix rules |
 | [Lexique 3.83](http://www.lexique.org/) | fr | POS + frequency enrichment |
 | [WOLF](https://github.com/nicolashernandez/WOLF) | fr | Definitions, synonyms, synset IDs |
 | [Dicionário Aberto](https://github.com/jorgecardoso/dicionario-aberto) | pt-PT | Definitions |
 | [CETEMPúblico](https://www.linguateca.pt/acesso/corpus.php?corpus=CETEMPUBLICO) | pt-PT | European Portuguese word frequency |
-| [Open Multilingual Wordnet](https://github.com/omwn/omw-data) | pt-PT | Synset mappings to Princeton WordNet |
+| [Open Multilingual Wordnet](https://github.com/omwn/omw-data) | pt-PT, es | Synset mappings to Princeton WordNet |
+| [FrequencyWords](https://github.com/hermitdave/FrequencyWords) | es | OpenSubtitles-derived word frequency |
 | [CC-CEDICT](https://cc-cedict.org/) | zh | Words, definitions, translations |
 | [Wiktionary via kaikki.org](https://kaikki.org/) | all | Definitions, synonyms, antonyms, translations, IPA, etymology |
 
@@ -427,10 +440,13 @@ data/                 Source data files (gitignored)
 | en | ~137k | ~362k |
 | fr | ~56k | ~138k |
 | pt-PT | ~136k | ~85k |
+| es† | ~118k | ~151k |
 | zh | ~121k | ~200k |
-| **Total** | **~450k** | **~785k** |
+| **Total** | **~568k** | **~936k** |
 
 English words include ~3,800 US-only and ~3,900 GB-only regional variants. Word counts include inflected forms from affix expansion, with ghost words pruned automatically.
+
+† Spanish figures are projections, not measured on a full import. A Spanish import without Wiktionary yields 56k words from the Hunspell list, affix expansion, the frequency list, and 113k OMW synset links; Wiktionary supplies the rest.
 
 ---
 

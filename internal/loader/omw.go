@@ -10,14 +10,25 @@ import (
 	"strings"
 )
 
-// OMWLoader loads Open Multilingual Wordnet data for Portuguese,
-// mapping pt-PT words to Princeton WordNet synset IDs.
-type OMWLoader struct{}
+// OMWLoader loads Open Multilingual Wordnet data for one language,
+// mapping its words to Princeton WordNet synset IDs. These mappings are what
+// /backing uses to find English semantic equivalents.
+type OMWLoader struct {
+	Lang     string   // language of the words to link, e.g. "pt-PT"
+	Suffix   string   // OMW ISO 639-3 code used in file names, e.g. "por"
+	Extra    []string // additional candidate paths relative to dataDir
+	LangName string   // optional loader-name suffix; defaults to Lang
+}
 
-func (OMWLoader) Name() string { return "omw-pt" }
+func (o OMWLoader) Name() string {
+	if o.LangName != "" {
+		return "omw-" + o.LangName
+	}
+	return "omw-" + o.Lang
+}
 
-func (OMWLoader) Load(db *sql.DB, dataDir string) error {
-	// OMW Portuguese data comes as a tab-separated file.
+func (o OMWLoader) Load(db *sql.DB, dataDir string) error {
+	// OMW data comes as a tab-separated file.
 	// Format varies by release but typically:
 	//   synset_id<tab>relation<tab>word
 	// where synset_id is like "eng-30-00001740-n" and relation is "lemma"
@@ -27,9 +38,11 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 
 	// Try multiple possible file locations
 	candidates := []string{
-		filepath.Join(dataDir, "omw", "wn-data-por.tab"),
-		filepath.Join(dataDir, "omw", "wn-por.tab"),
-		filepath.Join(dataDir, "omw-pt.tab"),
+		filepath.Join(dataDir, "omw", "wn-data-"+o.Suffix+".tab"),
+		filepath.Join(dataDir, "omw", "wn-"+o.Suffix+".tab"),
+	}
+	for _, e := range o.Extra {
+		candidates = append(candidates, filepath.Join(dataDir, e))
 	}
 
 	var path string
@@ -40,7 +53,7 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 		}
 	}
 	if path == "" {
-		slog.Warn("omw-pt: no data file found, skipping", "searched", candidates)
+		slog.Warn(o.Name()+": no data file found, skipping", "searched", candidates)
 		return nil
 	}
 
@@ -61,7 +74,7 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 		INSERT OR IGNORE INTO word_synsets (word_id, synset_id, source)
 		SELECT w.id, s.id, 'omw'
 		FROM words w, synsets s
-		WHERE w.word = ? AND w.lang = 'pt-PT' AND s.synset_id = ?`)
+		WHERE w.word = ? AND w.lang = ? AND s.synset_id = ?`)
 	if err != nil {
 		return fmt.Errorf("omw: prepare word_synset: %w", err)
 	}
@@ -98,8 +111,10 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 		relation := fields[1]
 		word := strings.ToLower(strings.TrimSpace(fields[2]))
 
-		// Only process lemma relations
-		if relation != "lemma" {
+		// Only process lemma relations. Wordnets sourced from the MCR
+		// (Spanish among them) prefix the relation with their language code,
+		// e.g. "spa:lemma"; OpenWN-PT writes a bare "lemma".
+		if !isOMWLemmaRelation(relation) {
 			continue
 		}
 
@@ -128,7 +143,7 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 		}
 		synsetCount++
 
-		if _, err := stmtWordSynset.Exec(word, synsetID); err != nil {
+		if _, err := stmtWordSynset.Exec(word, o.Lang, synsetID); err != nil {
 			return fmt.Errorf("omw: insert word_synset: %w", err)
 		}
 		linkCount++
@@ -141,8 +156,14 @@ func (OMWLoader) Load(db *sql.DB, dataDir string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("omw: commit: %w", err)
 	}
-	slog.Info("omw-pt loaded", "synsets", synsetCount, "links", linkCount)
+	slog.Info("omw loaded", "loader", o.Name(), "lang", o.Lang, "synsets", synsetCount, "links", linkCount)
 	return nil
+}
+
+// isOMWLemmaRelation reports whether a relation column marks a lemma entry.
+// Accepts both "lemma" and the MCR's "<iso639-3>:lemma" form.
+func isOMWLemmaRelation(relation string) bool {
+	return relation == "lemma" || strings.HasSuffix(relation, ":lemma")
 }
 
 func normalizeOMWSynsetID(raw string) string {

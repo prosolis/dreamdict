@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+
+	"dreamdict/internal/dictionary"
 )
 
 // DifficultyScorer computes a composite difficulty score for all words
@@ -21,10 +23,8 @@ type DifficultyScorer struct{}
 func (DifficultyScorer) Name() string { return "difficulty" }
 
 func (DifficultyScorer) Load(db *sql.DB, _ string) error {
-	langs := []string{"en", "fr", "pt-PT", "zh"}
-
 	var totalUpdated int64
-	for _, lang := range langs {
+	for _, lang := range dictionary.Langs() {
 		n, err := scoreLang(db, lang)
 		if err != nil {
 			return fmt.Errorf("difficulty: %s: %w", lang, err)

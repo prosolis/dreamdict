@@ -229,6 +229,64 @@ func TestTranslate(t *testing.T) {
 	}
 }
 
+// Spanish has no curated monolingual dictionary in the import; its synset
+// mappings come from OMW alone, so /backing is the endpoint most likely to
+// regress for it.
+func TestEnglishBackingSpanish(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos) VALUES (8, 'perro', 'es', 'noun')")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos) VALUES (9, 'dog', 'en', 'noun')")
+	mustExec(t, db, "INSERT INTO definitions (word_id, pos, gloss, source, priority) VALUES (9, 'noun', 'a domesticated carnivorous mammal', 'wordnet', 10)")
+	mustExec(t, db, "INSERT INTO synsets (id, synset_id, pos) VALUES (1, '02084071-n', 'noun')")
+	mustExec(t, db, "INSERT INTO word_synsets (word_id, synset_id, source) VALUES (8, 1, 'omw')")
+	mustExec(t, db, "INSERT INTO word_synsets (word_id, synset_id, source) VALUES (9, 1, 'wordnet')")
+
+	d := NewFromDB(db)
+	eqs, err := d.EnglishBacking("perro", "es")
+	if err != nil {
+		t.Fatalf("EnglishBacking: %v", err)
+	}
+	if len(eqs) != 1 {
+		t.Fatalf("EnglishBacking(perro, es) returned %d equivalents, want 1", len(eqs))
+	}
+	if eqs[0].Word != "dog" {
+		t.Errorf("word = %q, want dog", eqs[0].Word)
+	}
+	if eqs[0].Synset != "02084071-n" {
+		t.Errorf("synset = %q, want 02084071-n", eqs[0].Synset)
+	}
+	if eqs[0].Definition == "" {
+		t.Error("expected the WordNet gloss to come through with the equivalent")
+	}
+}
+
+func TestValidLang(t *testing.T) {
+	for _, lang := range []string{"en", "fr", "pt-PT", "es", "zh"} {
+		if !ValidLang(lang) {
+			t.Errorf("ValidLang(%q) = false, want true", lang)
+		}
+	}
+	for _, lang := range []string{"", "xx", "pt", "es-ES", "EN"} {
+		if ValidLang(lang) {
+			t.Errorf("ValidLang(%q) = true, want false", lang)
+		}
+	}
+}
+
+func TestLangsIsACopy(t *testing.T) {
+	langs := Langs()
+	if len(langs) != len(supportedLangs) {
+		t.Fatalf("Langs() returned %d langs, want %d", len(langs), len(supportedLangs))
+	}
+	langs[0] = "mutated"
+	if supportedLangs[0] == "mutated" {
+		t.Error("Langs() exposed the underlying slice — callers can corrupt the registry")
+	}
+}
+
 func TestErrNotSeeded(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

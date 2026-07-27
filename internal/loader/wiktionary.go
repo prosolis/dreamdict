@@ -12,7 +12,7 @@ import (
 )
 
 type WiktionaryLoader struct {
-	Lang     string // "en", "fr", "pt-PT"
+	Lang     string // "en", "fr", "pt-PT", "es", "zh"
 	FileName string // e.g. "kaikki-en.jsonl"
 }
 
@@ -65,6 +65,7 @@ var wiktLangCodeMap = map[string]string{
 	"fr": "fr",
 	"pt": "pt-PT",
 	"en": "en",
+	"es": "es",
 	"zh": "zh",
 }
 

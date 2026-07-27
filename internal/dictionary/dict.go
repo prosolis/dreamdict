@@ -10,7 +10,14 @@ var (
 	ErrNotSeeded = errors.New("dictionary: database not seeded, run: go run ./cmd/dictimport")
 )
 
-var supportedLangs = []string{"en", "fr", "pt-PT", "zh"}
+var supportedLangs = []string{"en", "fr", "pt-PT", "es", "zh"}
+
+// Langs returns every supported language code. Import and reporting code
+// iterates this rather than keeping its own list, so adding a language is a
+// one-line change here.
+func Langs() []string {
+	return append([]string(nil), supportedLangs...)
+}
 
 func ValidLang(lang string) bool {
 	for _, l := range supportedLangs {

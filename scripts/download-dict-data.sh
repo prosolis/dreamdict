@@ -265,14 +265,14 @@ if [[ ! -f "$DATA_DIR/kaikki-en.jsonl" ]]; then
 fi
 
 # ============================================================
-# French + pt-PT — Hunspell (LibreOffice dictionaries)
+# French + pt-PT + Spanish — Hunspell (LibreOffice dictionaries)
 # ============================================================
-echo "=== Hunspell (French + Portuguese) ==="
+echo "=== Hunspell (French + Portuguese + Spanish) ==="
 HUNSPELL_DIR="$DATA_DIR/hunspell-dicts"
 clone_if_missing "https://github.com/LibreOffice/dictionaries.git" "$HUNSPELL_DIR"
 # Copy the files we need and verify they exist
-mkdir -p "$DATA_DIR/fr_FR" "$DATA_DIR/pt_PT"
-for dic in "$HUNSPELL_DIR/fr_FR/fr.dic" "$HUNSPELL_DIR/pt_PT/pt_PT.dic"; do
+mkdir -p "$DATA_DIR/fr_FR" "$DATA_DIR/pt_PT" "$DATA_DIR/es_ES"
+for dic in "$HUNSPELL_DIR/fr_FR/fr.dic" "$HUNSPELL_DIR/pt_PT/pt_PT.dic" "$HUNSPELL_DIR/es/es_ES.dic"; do
     if [[ ! -f "$dic" ]]; then
         echo "  [FAIL] expected file missing from clone: $dic"
         exit 1
@@ -301,6 +301,22 @@ else
         echo "  [ok] found pt_PT .aff file at: $PT_AFF"
     else
         echo "  [warn] no .aff file found for pt_PT — affix expansion will be skipped"
+    fi
+fi
+# Spanish dictionaries live in es/ in the repo (es_ES, es_MX, es_AR, ...).
+# We take es_ES (Castilian) and store it under es_ES/ to match the import paths.
+cp -f "$HUNSPELL_DIR/es/es_ES.dic" "$DATA_DIR/es_ES/es_ES.dic"
+if [[ -f "$HUNSPELL_DIR/es/es_ES.aff" ]]; then
+    cp -f "$HUNSPELL_DIR/es/es_ES.aff" "$DATA_DIR/es_ES/es_ES.aff"
+else
+    # es/ holds one .aff per regional variant (es_AR, es_MX, ...), so only
+    # accept an es_ES one — an arbitrary variant would be the wrong dialect.
+    ES_AFF=$(find "$HUNSPELL_DIR" -type f -name "es_ES.aff" 2>/dev/null | head -1)
+    if [[ -n "$ES_AFF" ]]; then
+        cp -f "$ES_AFF" "$DATA_DIR/es_ES/es_ES.aff"
+        echo "  [ok] found es_ES .aff file at: $ES_AFF"
+    else
+        echo "  [warn] no es_ES .aff file found — affix expansion will be skipped"
     fi
 fi
 
@@ -430,34 +446,49 @@ if [[ ! -f "$PT_FREQ_FILE" ]]; then
 fi
 
 # ============================================================
-# pt-PT — Open Multilingual Wordnet
+# pt-PT + Spanish — Open Multilingual Wordnet
 # ============================================================
-echo "=== Open Multilingual Wordnet (Portuguese synset mappings) ==="
+echo "=== Open Multilingual Wordnet (Portuguese + Spanish synset mappings) ==="
 OMW_DIR="$DATA_DIR/omw"
-OMW_FILE="$OMW_DIR/wn-data-por.tab"
-if [[ -f "$OMW_FILE" && "$FORCE" != "true" ]]; then
-    echo "  [skip] wn-data-por.tab already exists"
-fi
-if [[ ! -f "$OMW_FILE" ]]; then
+# ISO 639-3 code : language label used in messages
+OMW_LANGS=("por:Portuguese:pt-PT" "spa:Spanish:es")
+OMW_MISSING=false
+for entry in "${OMW_LANGS[@]}"; do
+    code="${entry%%:*}"
+    if [[ -f "$OMW_DIR/wn-data-$code.tab" && "$FORCE" != "true" ]]; then
+        echo "  [skip] wn-data-$code.tab already exists"
+    else
+        OMW_MISSING=true
+    fi
+done
+if [[ "$OMW_MISSING" == "true" ]]; then
     OMW_REPO="$DATA_DIR/omw-data-repo"
     clone_if_missing "https://github.com/omwn/omw-data.git" "$OMW_REPO"
     mkdir -p "$OMW_DIR"
-    # Find the Portuguese tab file in the repo
-    FOUND_OMW=$(find "$OMW_REPO" -type f -name "wn-data-por.tab" 2>/dev/null | head -1)
-    if [[ -n "$FOUND_OMW" ]]; then
-        cp "$FOUND_OMW" "$OMW_FILE"
-        echo "  [ok] extracted wn-data-por.tab"
-    else
-        # Try alternative naming
-        FOUND_OMW=$(find "$OMW_REPO" -type f -name "*por*" -name "*.tab" 2>/dev/null | head -1)
+    for entry in "${OMW_LANGS[@]}"; do
+        code="${entry%%:*}"
+        rest="${entry#*:}"
+        label="${rest%%:*}"
+        langtag="${rest#*:}"
+        OMW_FILE="$OMW_DIR/wn-data-$code.tab"
+        if [[ -f "$OMW_FILE" && "$FORCE" != "true" ]]; then
+            continue
+        fi
+        # The MCR tab files live under wns/mcr/ but the layout has moved
+        # between releases, so search the whole clone.
+        FOUND_OMW=$(find "$OMW_REPO" -type f -name "wn-data-$code.tab" 2>/dev/null | head -1)
+        if [[ -z "$FOUND_OMW" ]]; then
+            # Try alternative naming
+            FOUND_OMW=$(find "$OMW_REPO" -type f -name "*$code*" -name "*.tab" 2>/dev/null | head -1)
+        fi
         if [[ -n "$FOUND_OMW" ]]; then
             cp "$FOUND_OMW" "$OMW_FILE"
-            echo "  [ok] extracted Portuguese OMW data"
+            echo "  [ok] extracted $label OMW data (wn-data-$code.tab)"
         else
-            echo "  [warn] could not find Portuguese data in OMW repo"
-            echo "  The import will proceed without synset mappings for pt-PT."
+            echo "  [warn] could not find $label data in OMW repo"
+            echo "  The import will proceed without synset mappings for $langtag."
         fi
-    fi
+    done
     rm -rf "$OMW_REPO"
 fi
 
@@ -479,6 +510,47 @@ if [[ ! -f "$DATA_DIR/kaikki-pt.jsonl" ]]; then
     echo "  [decompress] kaikki-pt.jsonl.gz"
     gunzip -kf "$KAIKKI_PT_GZ"
     save_checksum "kaikki-pt" "$KAIKKI_PT_GZ"
+fi
+
+# ============================================================
+# Spanish — frequency list
+# ============================================================
+echo "=== Spanish frequency data ==="
+ES_FREQ_FILE="$DATA_DIR/es_50k.txt"
+if [[ -f "$ES_FREQ_FILE" && "$FORCE" != "true" ]]; then
+    if check_min_size "$ES_FREQ_FILE" 100000; then
+        echo "  [skip] es_50k.txt already exists (size ok)"
+    else
+        echo "  [warn] es_50k.txt looks truncated, re-downloading"
+        rm -f "$ES_FREQ_FILE"
+    fi
+fi
+if [[ ! -f "$ES_FREQ_FILE" ]]; then
+    # OpenSubtitles-derived frequency list (hermitdave/FrequencyWords)
+    download "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2016/es/es_50k.txt" "$ES_FREQ_FILE" 2>/dev/null || {
+        echo "  [warn] Spanish frequency download failed."
+        echo "  The import will proceed without frequency data."
+    }
+fi
+
+# ============================================================
+# Spanish — Wiktionary (kaikki)
+# ============================================================
+echo "=== Wiktionary Spanish (compressed: ~90 MB) ==="
+if [[ -f "$DATA_DIR/kaikki-es.jsonl" && "$FORCE" != "true" ]]; then
+    if check_min_size "$DATA_DIR/kaikki-es.jsonl" 50000000; then
+        echo "  [skip] kaikki-es.jsonl already exists (size ok)"
+    else
+        echo "  [warn] kaikki-es.jsonl looks truncated, re-downloading"
+        rm -f "$DATA_DIR/kaikki-es.jsonl"
+    fi
+fi
+if [[ ! -f "$DATA_DIR/kaikki-es.jsonl" ]]; then
+    KAIKKI_ES_GZ="$DATA_DIR/kaikki-es.jsonl.gz"
+    download "https://kaikki.org/dictionary/Spanish/kaikki.org-dictionary-Spanish.jsonl.gz" "$KAIKKI_ES_GZ"
+    echo "  [decompress] kaikki-es.jsonl.gz"
+    gunzip -kf "$KAIKKI_ES_GZ"
+    save_checksum "kaikki-es" "$KAIKKI_ES_GZ"
 fi
 
 # ============================================================

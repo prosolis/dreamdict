@@ -89,8 +89,11 @@ func (d *Dictionary) RandomWord(lang string, opts Options) (RandomResult, error)
 	return result, nil
 }
 
-func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
-	query := "SELECT DISTINCT word FROM words WHERE lang = ?"
+// wordListQuery builds a "SELECT <cols> FROM words WHERE ..." statement from
+// the filters in opts. Words and WordsWithFreqs share it so a filter added
+// here applies to both.
+func wordListQuery(cols, lang string, opts Options) (string, []any) {
+	query := "SELECT DISTINCT " + cols + " FROM words WHERE lang = ?"
 	args := []any{lang}
 
 	if opts.POS != "" {
@@ -123,6 +126,11 @@ func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
 	}
 
 	query += " ORDER BY word LIMIT 20000"
+	return query, args
+}
+
+func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
+	query, args := wordListQuery("word", lang, opts)
 
 	rows, err := d.db.Query(query, args...)
 	if err != nil {
@@ -145,6 +153,39 @@ func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
 		return nil, ErrNoMatch
 	}
 	return words, nil
+}
+
+// WordEntry holds a word and its frequency score.
+type WordEntry struct {
+	Word string
+	Freq int
+}
+
+// WordsWithFreqs returns matching words with their frequency scores.
+func (d *Dictionary) WordsWithFreqs(lang string, opts Options) ([]WordEntry, error) {
+	query, args := wordListQuery("word, COALESCE(frequency, 0)", lang, opts)
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: words with freqs: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []WordEntry
+	for rows.Next() {
+		var e WordEntry
+		if err := rows.Scan(&e.Word, &e.Freq); err != nil {
+			return nil, fmt.Errorf("dictionary: words with freqs scan: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("dictionary: words with freqs: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil, ErrNoMatch
+	}
+	return entries, nil
 }
 
 func (d *Dictionary) Define(word, lang string) ([]Definition, error) {
