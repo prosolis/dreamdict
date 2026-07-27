@@ -147,6 +147,71 @@ func (d *Dictionary) Words(lang string, opts Options) ([]string, error) {
 	return words, nil
 }
 
+// WordEntry holds a word and its frequency score.
+type WordEntry struct {
+	Word string
+	Freq int
+}
+
+// WordsWithFreqs returns matching words with their frequency scores.
+func (d *Dictionary) WordsWithFreqs(lang string, opts Options) ([]WordEntry, error) {
+	query := "SELECT DISTINCT word, COALESCE(frequency, 0) FROM words WHERE lang = ?"
+	args := []any{lang}
+
+	if opts.POS != "" {
+		query += " AND pos = ?"
+		args = append(args, opts.POS)
+	}
+	if opts.MinLength > 0 {
+		query += " AND LENGTH(word) >= ?"
+		args = append(args, opts.MinLength)
+	}
+	if opts.MaxLength > 0 {
+		query += " AND LENGTH(word) <= ?"
+		args = append(args, opts.MaxLength)
+	}
+	if opts.MinFrequency > 0 {
+		query += " AND frequency >= ?"
+		args = append(args, opts.MinFrequency)
+	}
+	if opts.MinDifficulty > 0 {
+		query += " AND difficulty >= ?"
+		args = append(args, opts.MinDifficulty)
+	}
+	if opts.MaxDifficulty > 0 {
+		query += " AND difficulty <= ?"
+		args = append(args, opts.MaxDifficulty)
+	}
+	if opts.Variant != "" {
+		query += " AND variant = ?"
+		args = append(args, opts.Variant)
+	}
+
+	query += " ORDER BY word LIMIT 20000"
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: words with freqs: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []WordEntry
+	for rows.Next() {
+		var e WordEntry
+		if err := rows.Scan(&e.Word, &e.Freq); err != nil {
+			return nil, fmt.Errorf("dictionary: words with freqs scan: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("dictionary: words with freqs: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil, ErrNoMatch
+	}
+	return entries, nil
+}
+
 func (d *Dictionary) Define(word, lang string) ([]Definition, error) {
 	rows, err := d.db.Query(`
 		SELECT d.pos, d.gloss, d.source, d.priority

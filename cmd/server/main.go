@@ -107,11 +107,6 @@ func main() {
 	mux.HandleFunc("GET /rhyme", handleRhyme(dict))
 	mux.HandleFunc("GET /health", handleHealth(dict, *dbPath))
 
-	// Cache total word count for status line
-	if wc, err := dict.TotalWordCount(); err == nil {
-		totalWords.Store(uint64(wc))
-	}
-
 	serverStart = time.Now()
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 
@@ -160,7 +155,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 var (
 	queryCount  atomic.Uint64
 	errorCount  atomic.Uint64
-	totalWords  atomic.Uint64
+	wordsServed atomic.Uint64
 	serverStart time.Time
 	lastPath    atomic.Value // stores string
 )
@@ -174,14 +169,26 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		if rec.status >= 400 {
 			errorCount.Add(1)
 		}
-		lastPath.Store(r.URL.Path)
+		// Count words served — every non-health, non-bulk endpoint serves one word lookup.
+		path := r.URL.Path
+		if rec.status < 400 && path != "/health" && path != "/words" {
+			if path == "/frequency/batch" {
+				// Batch endpoint: count each word in the comma-separated list
+				if wds := r.URL.Query().Get("words"); wds != "" {
+					wordsServed.Add(uint64(strings.Count(wds, ",") + 1))
+				}
+			} else {
+				wordsServed.Add(1)
+			}
+		}
+		lastPath.Store(path)
 		uptime := time.Since(serverStart).Truncate(time.Second)
 		rps := float64(n) / time.Since(serverStart).Seconds()
 		errs := errorCount.Load()
 		last, _ := lastPath.Load().(string)
-		words := totalWords.Load()
-		fmt.Fprintf(os.Stdout, "\r\033[2KWords: %dk | Queries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
-			words/1000, n, errs, rps, uptime, last)
+		served := wordsServed.Load()
+		fmt.Fprintf(os.Stdout, "\r\033[2KServed: %dk | Queries: %d | Errors: %d | Req/s: %.1f | Uptime: %s | Last: %s",
+			served/1000, n, errs, rps, uptime, last)
 		slog.Debug("request",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -320,22 +327,48 @@ func handleWords(dict *dictionary.Dictionary) http.HandlerFunc {
 		}
 
 		opts := parseOptions(r)
+		includeFreq := r.URL.Query().Get("include_freq") == "true"
 
-		words, err := dict.Words(lang, opts)
-		if err == dictionary.ErrNoMatch {
-			writeError(w, 404, "no_match", "no words match the given filters")
-			return
+		if includeFreq {
+			entries, err := dict.WordsWithFreqs(lang, opts)
+			if err == dictionary.ErrNoMatch {
+				writeError(w, 404, "no_match", "no words match the given filters")
+				return
+			}
+			if err != nil {
+				slog.Error("words", "error", err)
+				writeError(w, 500, "internal", "internal error")
+				return
+			}
+			words := make([]string, len(entries))
+			freqs := make([]int, len(entries))
+			for i, e := range entries {
+				words[i] = e.Word
+				freqs[i] = e.Freq
+			}
+			writeJSON(w, 200, map[string]any{
+				"lang":  lang,
+				"count": len(words),
+				"words": words,
+				"freqs": freqs,
+			})
+		} else {
+			words, err := dict.Words(lang, opts)
+			if err == dictionary.ErrNoMatch {
+				writeError(w, 404, "no_match", "no words match the given filters")
+				return
+			}
+			if err != nil {
+				slog.Error("words", "error", err)
+				writeError(w, 500, "internal", "internal error")
+				return
+			}
+			writeJSON(w, 200, map[string]any{
+				"lang":  lang,
+				"count": len(words),
+				"words": words,
+			})
 		}
-		if err != nil {
-			slog.Error("words", "error", err)
-			writeError(w, 500, "internal", "internal error")
-			return
-		}
-		writeJSON(w, 200, map[string]any{
-			"lang":  lang,
-			"count": len(words),
-			"words": words,
-		})
 	}
 }
 
