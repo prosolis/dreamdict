@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"dreamdict/internal/dictionary"
-	"dreamdict/internal/loader"
+	"github.com/prosolis/dreamdict/dictionary"
+	"github.com/prosolis/dreamdict/internal/loader"
 
 	_ "modernc.org/sqlite"
 )

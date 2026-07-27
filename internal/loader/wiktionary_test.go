@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"dreamdict/internal/dictionary"
+	"github.com/prosolis/dreamdict/dictionary"
 
 	_ "modernc.org/sqlite"
 )

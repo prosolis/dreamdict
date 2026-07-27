@@ -1,4 +1,4 @@
-module dreamdict
+module github.com/prosolis/dreamdict
 
 go 1.25.0
 

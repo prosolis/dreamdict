@@ -49,6 +49,32 @@ The server listens on `127.0.0.1:7777` by default.
 
 ---
 
+## Using DreamDict as a Go library
+
+The server is one way to consume DreamDict, not the only one. If your program is
+already on the same machine as `dict.db`, you can skip HTTP entirely and open the
+database directly — the `dictionary` package is the same code the handlers call.
+
+```go
+import "github.com/prosolis/dreamdict/dictionary"
+
+d, err := dictionary.NewReadOnly("/var/lib/dreamdict/dict.db")
+if err != nil {
+    // dictionary.ErrNotSeeded means the file exists but was never imported.
+}
+defer d.Close()
+
+defs, _ := d.Define("ardor", "en")
+trs, _ := d.Translate("cat", "en", "pt-PT")
+```
+
+`NewReadOnly` opens the file read-only and supports concurrent readers, so
+several processes can share one `dict.db`. The only dependency is
+`modernc.org/sqlite` — still no CGO. The loaders that *build* the database stay
+under `internal/`; only reading it is public API.
+
+---
+
 ## API
 
 All endpoints are read-only `GET` requests returning JSON. When authentication is enabled, all endpoints except `/health` require a bearer token (see [Authentication](#authentication)).
@@ -348,7 +374,7 @@ Use `min_difficulty` / `max_difficulty` on `/random` to select words by difficul
 
 ## Database Schema
 
-Schema version 2. Full schema in `internal/dictionary/db.go`.
+Schema version 2. Full schema in `dictionary/db.go`.
 
 | Table | Purpose |
 |---|---|
@@ -424,7 +450,7 @@ go test ./...
 ```
 cmd/server/           HTTP server binary
 cmd/dictimport/       One-time data import CLI
-internal/dictionary/  Core package: schema, types, queries
+dictionary/           Core package: schema, types, queries (importable)
 internal/loader/      One loader per data source
 scripts/              Data download script
 deploy/               systemd unit file

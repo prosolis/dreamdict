@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"dreamdict/internal/dictionary"
+	"github.com/prosolis/dreamdict/dictionary"
 )
 
 // DifficultyScorer computes a composite difficulty score for all words

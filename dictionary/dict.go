@@ -1,3 +1,11 @@
+// Package dictionary is DreamDict's query layer over a built dict.db: the
+// schema, the types, and every lookup the HTTP server exposes.
+//
+// It sits outside internal/ deliberately, because the server is not the only
+// way to consume DreamDict. A Go program that already has the database file on
+// disk can skip the network entirely — open it with NewReadOnly and call the
+// same methods the handlers call. The loaders that *build* the database stay
+// internal; only reading it is public API.
 package dictionary
 
 import (

@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"dreamdict/internal/dictionary"
+	"github.com/prosolis/dreamdict/dictionary"
 )
 
 func main() {

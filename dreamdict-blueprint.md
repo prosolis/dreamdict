@@ -172,7 +172,7 @@ Health check and database stats.
 
 ---
 
-## Core Package (`internal/dictionary`)
+## Core Package (`dictionary`)
 
 ### `dict.go`
 
@@ -681,7 +681,7 @@ Standard library covers everything else: `net/http`, `encoding/xml`, `encoding/j
 
 ## Testing
 
-### Service Tests (`internal/dictionary/dict_test.go`)
+### Service Tests (`dictionary/dict_test.go`)
 
 Use `:memory:` SQLite. Cover:
 
