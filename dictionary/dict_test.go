@@ -506,8 +506,8 @@ func TestCmuTail(t *testing.T) {
 		{"K AE1 T", "AE1 T"},
 		{"HH AE1 P IY0", "AE1 P IY0"},
 		{"IH0 F EH1 M ER0 AH0 L", "EH1 M ER0 AH0 L"},
-		{"AH0", "AH0"},       // no stressed vowel, falls back to any vowel
-		{"K T S", ""},          // no vowels at all
+		{"AH0", "AH0"}, // no stressed vowel, falls back to any vowel
+		{"K T S", ""},  // no vowels at all
 	}
 	for _, tt := range tests {
 		got := cmuTail(tt.input)
@@ -558,8 +558,8 @@ func TestWordVariant(t *testing.T) {
 	}{
 		{"color", "en", "us"},
 		{"colour", "en", "gb"},
-		{"cat", "en", ""},       // common English, no variant
-		{"gato", "pt-PT", ""},   // non-English, no variant
+		{"cat", "en", ""},     // common English, no variant
+		{"gato", "pt-PT", ""}, // non-English, no variant
 		{"nonexistent", "en", ""},
 	}
 	for _, tt := range tests {
@@ -614,5 +614,102 @@ func TestVariantFilter(t *testing.T) {
 	}
 	if len(words) != 5 {
 		t.Errorf("Words(no variant) returned %d, want 5", len(words))
+	}
+}
+
+func TestEquivalentsPrefersSynsetsOverTranslations(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	// "ephemeral" is the real-data shape this method exists for: no en→pt-PT
+	// translation row anywhere, but three pt-PT words sharing its synset.
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (20, 'ephemeral', 'en', 'adjective', 600)")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (21, 'transitório', 'pt-PT', 'adjective', 40)")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (22, 'passageiro', 'pt-PT', 'adjective', 500)")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (23, 'efémero', 'pt-PT', 'adjective', 120)")
+	mustExec(t, db, "INSERT INTO synsets (id, synset_id, pos) VALUES (20, '00914031-a', 'adjective')")
+	for _, id := range []int{20, 21, 22, 23} {
+		mustExec(t, db, "INSERT INTO word_synsets (word_id, synset_id, source) VALUES (?, 20, 'omw')", id)
+	}
+
+	d := NewFromDB(db)
+	got, err := d.Equivalents("ephemeral", "en", "pt-PT")
+	if err != nil {
+		t.Fatalf("Equivalents: %v", err)
+	}
+	// Commonest first, so a tooltip showing two shows the two worth showing.
+	want := []string{"passageiro", "efémero", "transitório"}
+	if len(got) != len(want) {
+		t.Fatalf("Equivalents = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Equivalents = %v, want %v (ordered by frequency)", got, want)
+		}
+	}
+	// Translate alone finds nothing here — that gap is the reason for this method.
+	if tr, err := d.Translate("ephemeral", "en", "pt-PT"); err != nil || len(tr) != 0 {
+		t.Fatalf("Translate = %v, %v; expected the gap this method fills", tr, err)
+	}
+	// The source word never comes back as its own equivalent.
+	for _, w := range got {
+		if w == "ephemeral" {
+			t.Fatal("Equivalents returned the word itself")
+		}
+	}
+}
+
+func TestEquivalentsFallsBackToTranslations(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	// "cat" comes seeded with a cat→gato translation row and no synset link at
+	// all — exactly the case the fallback exists for.
+	d := NewFromDB(db)
+	got, err := d.Equivalents("cat", "en", "pt-PT")
+	if err != nil {
+		t.Fatalf("Equivalents: %v", err)
+	}
+	if len(got) != 1 || got[0] != "gato" {
+		t.Fatalf("Equivalents = %v, want [gato] via the translations fallback", got)
+	}
+	// A language the database was not built with is an empty result, not an error.
+	if got, err := d.Equivalents("cat", "en", "de"); err != nil || len(got) != 0 {
+		t.Fatalf("Equivalents into an unbuilt language = %v, %v", got, err)
+	}
+}
+
+func TestEquivalentsRanksSenseAgreementAboveFrequency(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	seedTestData(t, db)
+
+	// The shape that made this ordering necessary, taken from the real data:
+	// "think" shares six synsets with pensar and one with lembrar, but lembrar
+	// is the commoner Portuguese word. Ranking on frequency alone therefore
+	// glosses "think" as "remember" — the wrong word, confidently.
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (30, 'think', 'en', 'verb', 1000)")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (31, 'pensar', 'pt-PT', 'verb', 1890)")
+	mustExec(t, db, "INSERT INTO words (id, word, lang, pos, frequency) VALUES (32, 'lembrar', 'pt-PT', 'verb', 6123)")
+	for i, syn := range []string{"00628491-v", "00629738-v", "00631737-v"} {
+		mustExec(t, db, "INSERT INTO synsets (id, synset_id, pos) VALUES (?, ?, 'verb')", 30+i, syn)
+		mustExec(t, db, "INSERT INTO word_synsets (word_id, synset_id, source) VALUES (30, ?, 'wordnet')", 30+i)
+		mustExec(t, db, "INSERT INTO word_synsets (word_id, synset_id, source) VALUES (31, ?, 'omw')", 30+i)
+	}
+	// lembrar shares exactly one of the three.
+	mustExec(t, db, "INSERT INTO word_synsets (word_id, synset_id, source) VALUES (32, 30, 'omw')")
+
+	got, err := NewFromDB(db).Equivalents("think", "en", "pt-PT")
+	if err != nil {
+		t.Fatalf("Equivalents: %v", err)
+	}
+	if len(got) != 2 || got[0] != "pensar" {
+		t.Fatalf("Equivalents = %v, want pensar first despite lembrar being commoner", got)
+	}
+	// One row per word, however many synsets it shares.
+	if got[1] != "lembrar" {
+		t.Fatalf("Equivalents = %v, want each word once", got)
 	}
 }

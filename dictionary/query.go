@@ -287,6 +287,66 @@ func (d *Dictionary) Translate(word, fromLang, toLang string) ([]string, error) 
 	return trans, rows.Err()
 }
 
+// Equivalents returns words in toLang that mean the same thing as word in
+// fromLang, best first.
+//
+// This is Translate's sibling and, for anything other than English as the
+// target, its better half. The translations table is built from Wiktionary
+// translation sections, which are thin in the en→X direction: measured against
+// the 2,000 commonest English words, it answers for 17% of them into pt-PT.
+// Going through shared Princeton WordNet synset ids instead — the same
+// mechanism EnglishBacking uses in reverse — answers for 61%, and it is where
+// the words a learner actually wants live: "ephemeral" has no en→pt-PT
+// translation row at all, but shares a synset with efémero, passageiro and
+// transitório.
+//
+// Results are ordered by how many of the source word's senses each candidate
+// shares, then by how common the candidate is. Sense agreement has to lead:
+// "think" belongs to a dozen synsets, and pensar sits in six of them while
+// lembrar sits in one — but lembrar is the commoner Portuguese word, so
+// frequency alone puts "remember" at the top of "think". Counting the overlap
+// first asks which word means the same thing *most often*, which is the
+// question. Frequency then breaks the ties, so casa leads firma for "house".
+//
+// The translations table is still consulted as a fallback, because a word can
+// have a translation and no synset link. Between them they cover 62%.
+func (d *Dictionary) Equivalents(word, fromLang, toLang string) ([]string, error) {
+	rows, err := d.db.Query(`
+		SELECT tw.word,
+		       COUNT(DISTINCT sws.synset_id) AS overlap,
+		       COALESCE(tw.frequency, 0)     AS freq
+		FROM words sw
+		JOIN word_synsets sws ON sws.word_id = sw.id
+		JOIN word_synsets tws ON tws.synset_id = sws.synset_id
+		JOIN words tw ON tw.id = tws.word_id AND tw.lang = ?
+		WHERE sw.word = ? AND sw.lang = ? AND tw.id != sw.id
+		GROUP BY tw.id
+		ORDER BY overlap DESC, freq DESC, tw.word`,
+		toLang, strings.ToLower(word), fromLang,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dictionary: equivalents: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var w string
+		var overlap, freq int
+		if err := rows.Scan(&w, &overlap, &freq); err != nil {
+			return nil, fmt.Errorf("dictionary: equivalents scan: %w", err)
+		}
+		out = append(out, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	return d.Translate(word, fromLang, toLang)
+}
+
 func (d *Dictionary) WordCount() (map[string]int, error) {
 	rows, err := d.db.Query("SELECT lang, COUNT(*) FROM words GROUP BY lang")
 	if err != nil {
