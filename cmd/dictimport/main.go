@@ -18,7 +18,7 @@ import (
 func main() {
 	dbPath := flag.String("db", "./dict.db", "Path to output dict.db")
 	dataDir := flag.String("data", "./data", "Path to data directory")
-	langs := flag.String("langs", "en,fr,pt-PT,zh", "Comma-separated languages to import")
+	langs := flag.String("langs", strings.Join(dictionary.Langs(), ","), "Comma-separated languages to import")
 	clean := flag.Bool("clean", false, "Drop and recreate all tables before import")
 	skipFlag := flag.String("skip", "", "Comma-separated loader names to skip")
 	flag.Parse()
@@ -95,8 +95,18 @@ func main() {
 			loader.AffixLoader{Lang: "pt-PT", DicFile: "pt_PT/pt_PT.dic", AffFile: "pt_PT/pt_PT.aff"},
 			loader.DicionarioLoader{},
 			loader.CETEMPublicoLoader{},
-			loader.OMWLoader{},
+			loader.OMWLoader{Lang: "pt-PT", Suffix: "por", LangName: "pt", Extra: []string{"omw-pt.tab"}},
 			loader.WiktionaryLoader{Lang: "pt-PT", FileName: "kaikki-pt.jsonl"},
+		)
+	}
+
+	if langSet["es"] {
+		loaders = append(loaders,
+			loader.HunspellLoader{Lang: "es", FileName: "es_ES/es_ES.dic"},
+			loader.AffixLoader{Lang: "es", DicFile: "es_ES/es_ES.dic", AffFile: "es_ES/es_ES.aff"},
+			loader.SpanishFreqLoader{},
+			loader.OMWLoader{Lang: "es", Suffix: "spa", Extra: []string{"omw-es.tab"}},
+			loader.WiktionaryLoader{Lang: "es", FileName: "kaikki-es.jsonl"},
 		)
 	}
 
@@ -138,13 +148,13 @@ func main() {
 	fmt.Println("\n=== Import Summary ===")
 	fmt.Printf("Elapsed: %s\n", time.Since(start).Round(time.Millisecond))
 	fmt.Println("Word counts:")
-	for _, lang := range []string{"en", "fr", "pt-PT", "zh"} {
+	for _, lang := range dictionary.Langs() {
 		if c, ok := wordCounts[lang]; ok {
 			fmt.Printf("  %s: %d\n", lang, c)
 		}
 	}
 	fmt.Println("Definition counts:")
-	for _, lang := range []string{"en", "fr", "pt-PT", "zh"} {
+	for _, lang := range dictionary.Langs() {
 		if c, ok := defCounts[lang]; ok {
 			fmt.Printf("  %s: %d\n", lang, c)
 		}
